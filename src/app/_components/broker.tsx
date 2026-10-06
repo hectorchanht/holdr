@@ -20,7 +20,6 @@ import {
 } from "lucide-react";
 
 import { api, type RouterOutputs } from "~/trpc/react";
-import { countBucket, track } from "~/lib/posthog";
 import { useCurrency } from "~/app/_components/currency";
 import {
   Code,
@@ -33,10 +32,7 @@ import {
   RowSkeleton,
   Spinner,
   StatCard,
-  TableToolbar,
   usePager,
-  useTableSort,
-  useTableTools,
   type DataColumn,
 } from "~/app/_components/ui";
 import { DividendIncome } from "~/app/_components/dividend-income";
@@ -61,76 +57,6 @@ const CREDS_KEY = "holdr.ibkr.creds";
 const SNAPSHOT_KEY = "holdr.ibkr.snapshot";
 /** Auto-sync on page load when the cached snapshot is older than this. */
 const AUTO_SYNC_AFTER_MS = 1 * 3600 * 1000;
-/**
- * After IBKR answers 1018 (rate limited) or 403/429 (blocked/throttled),
- * block every sync path for this long. IBKR throttles repeated calls to
- * the same query and repeat violations can lock the token or escalate to
- * an IP block — the app must not let the user (or its own auto-sync)
- * hammer through a throttle.
- */
-const COOLDOWN_MS = 10 * 60 * 1000;
-const COOLDOWN_KEY = "holdr.ibkr.cooldownUntil";
-
-function getCooldownUntil(): number | null {
-  try {
-    const v = Number(localStorage.getItem(COOLDOWN_KEY));
-    return Number.isFinite(v) && v > Date.now() ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-/** One-line history-backfill status for the IBKR card. */
-function backfillStatus(
-  bf: SyncResult["backfill"],
-): { text: string; tone: "ok" | "busy" | "warn" } | null {
-  if (!bf) return null;
-  if (bf.error) return { text: `Older history paused: ${bf.error}`, tone: "warn" };
-  const ymd = (s: string) => `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
-  if (bf.done && bf.oldestCovered)
-    return { text: `Full history synced — oldest ${ymd(bf.oldestCovered)} ✓`, tone: "ok" };
-  if (bf.windowFetched) {
-    const bits = [`+${bf.tradesFetched} trades`];
-    if (bf.cashFlowsStored > 0) bits.push(`+${bf.cashFlowsStored} cash flows`);
-    return {
-      text: `Fetching older history… now back to ${ymd(bf.oldestCovered ?? bf.windowFetched.fd)} · ${bits.join(" · ")} this sync`,
-      tone: "busy",
-    };
-  }
-  return { text: "Fetching older history…", tone: "busy" };
-}
-
-const BACKFILL_TONE = {
-  ok: "text-emerald-400/90",
-  busy: "text-sky-400/90",
-  warn: "text-amber-400/90",
-} as const;
-
-/**
- * Visual backfill progress: a pulsing range bar from the oldest covered
- * year to the current year. Determinate percentages would be dishonest
- * (the total window count is unknown until the empty-streak/floor stop),
- * so the bar shows the covered span growing leftward each sync.
- */
-function BackfillBar({ bf }: { bf: NonNullable<SyncResult["backfill"]> }) {
-  if (bf.done || bf.error) return null;
-  const oldest = bf.oldestCovered ?? bf.windowFetched?.fd ?? null;
-  const fromYear = oldest ? oldest.slice(0, 4) : null;
-  const toYear = String(new Date().getFullYear());
-  return (
-    <div className="mt-1.5" aria-hidden>
-      <div className="h-1 overflow-hidden rounded-full bg-zinc-800">
-        <div className="h-full w-full animate-pulse rounded-full bg-gradient-to-r from-sky-500/50 to-sky-400/90" />
-      </div>
-      {fromYear && (
-        <div className="mt-0.5 flex justify-between text-[10px] tabular-nums text-zinc-500">
-          <span>{fromYear}</span>
-          <span>{toYear}</span>
-        </div>
-      )}
-    </div>
-  );
-}
 
 /** One-line summary of an IBKR trade-import result for the status line. */
 function importSummary(s: {
@@ -252,14 +178,12 @@ function PositionsTable({ positions }: { positions: PositionLike[] }) {
   const money = useMoney();
   const total = positions.reduce<number>((a, p) => a + (valueOf(p) ?? 0), 0);
   const priced = positions.filter((p) => p.markPrice != null).length;
+  const pager = usePager(positions, 10);
 
   const columns: DataColumn<PositionLike>[] = [
     {
       key: "symbol",
       header: "Symbol",
-      sortValue: (p) => p.symbol,
-      sortDescFirst: false,
-      searchValue: (p) => `${p.symbol} ${p.description ?? ""}`,
       render: (p) => (
         <>
           <span className="font-semibold text-zinc-100">{p.symbol}</span>
@@ -277,47 +201,30 @@ function PositionsTable({ positions }: { positions: PositionLike[] }) {
       ),
     },
     {
-      key: "value",
-      header: "Value",
-      align: "right",
-      sortValue: (p) => valueOf(p),
-      filterValue: (p) => p.currency.toUpperCase(),
-      filterLabel: "Currency",
-      render: (p) => (
-        <span className="font-medium text-zinc-100">{money(valueOf(p))}</span>
-      ),
-    },
-    {
       key: "qty",
       header: "Qty",
       align: "right",
-      sortValue: (p) => p.quantity,
       render: (p) => <span className="text-zinc-300">{qtyFmt(p.quantity)}</span>,
     },
     {
       key: "mark",
       header: "Mark",
       align: "right",
-      sortValue: (p) => p.markPrice,
       render: (p) => (
         <span className="text-zinc-400">
           {p.markPrice == null ? "—" : money(p.markPrice)}
         </span>
       ),
     },
+    {
+      key: "value",
+      header: "Value",
+      align: "right",
+      render: (p) => (
+        <span className="font-medium text-zinc-100">{money(valueOf(p))}</span>
+      ),
+    },
   ];
-
-  const tools = useTableTools<PositionLike>({ storageKey: "ibkr-pos-tools" });
-  const posSort = useTableSort(columns, {
-    defaultKey: "value",
-    storageKey: "ibkr-positions",
-  });
-  const pager = usePager(posSort.applySort(tools.apply(positions, columns)), 10);
-  const handleSortChange = (key: string) => {
-    posSort.toggleSort(key);
-    pager.reset();
-  };
-  const handleToolsChange = () => pager.reset();
 
   return (
     <>
@@ -335,24 +242,10 @@ function PositionsTable({ positions }: { positions: PositionLike[] }) {
         </p>
       )}
       <div className="mt-3 overflow-hidden rounded-xl border border-zinc-800">
-        <div className="border-b border-zinc-800/60 px-3 py-2">
-          <TableToolbar
-            tools={tools}
-            columns={columns}
-            rows={positions}
-            searchPlaceholder="Search symbol or name…"
-            onChange={handleToolsChange}
-          />
-        </div>
         <DataTable
           columns={columns}
           rows={pager.rows}
           keyOf={(p, i) => p.id ?? `${p.symbol}-${i}`}
-          sort={posSort.sort}
-          onSortChange={handleSortChange}
-          emptyText={
-            tools.hasActive ? "No positions match the current filters." : undefined
-          }
           footer={
             <Pagination
               page={pager.page}
@@ -433,6 +326,9 @@ function AnalyticsView({ data }: { data: Analytics }) {
           0,
         );
 
+  const symPager = usePager(data.symbols, 10);
+  const tradePager = usePager(data.recentTrades, 10);
+
   const toneOf = (v: number | null): "pos" | "neg" | "neutral" =>
     v == null ? "neutral" : v > 0 ? "pos" : v < 0 ? "neg" : "neutral";
 
@@ -440,9 +336,6 @@ function AnalyticsView({ data }: { data: Analytics }) {
     {
       key: "symbol",
       header: "Symbol",
-      sortValue: (s) => s.symbol,
-      sortDescFirst: false,
-      searchValue: (s) => `${s.symbol} ${data.names?.[s.symbol] ?? ""}`,
       render: (s) => (
         <span className="font-semibold text-zinc-100">
           {s.symbol}
@@ -458,16 +351,12 @@ function AnalyticsView({ data }: { data: Analytics }) {
       key: "trades",
       header: "Trades",
       align: "right",
-      sortValue: (s) => s.trades,
       render: (s) => <span className="text-zinc-400">{s.trades}</span>,
     },
     {
       key: "pnl",
       header: "Realized P/L",
       align: "right",
-      sortValue: (s) => s.realizedPnl,
-      filterValue: (s) => (s.currency ?? "USD").toUpperCase(),
-      filterLabel: "Currency",
       render: (s) => (
         <span>
           {moneyFxSigned(s.realizedPnl, s.currency)}
@@ -479,33 +368,16 @@ function AnalyticsView({ data }: { data: Analytics }) {
       key: "fees",
       header: "Fees",
       align: "right",
-      sortValue: (s) => s.commissions,
       render: (s) => (
         <span className="text-zinc-400">{money(s.commissions)}</span>
       ),
     },
   ];
 
-  const symTools = useTableTools<SymbolAnalytics>({ storageKey: "ibkr-sym-tools" });
-  const symSort = useTableSort(symbolColumns, {
-    defaultKey: "pnl",
-    storageKey: "ibkr-symbols",
-  });
-  const symPager = usePager(
-    symSort.applySort(symTools.apply(data.symbols, symbolColumns)),
-    10,
-  );
-  const handleSymSortChange = (key: string) => {
-    symSort.toggleSort(key);
-    symPager.reset();
-  };
-  const handleSymToolsChange = () => symPager.reset();
-
   const tradeColumns: DataColumn<RecentTrade>[] = [
     {
       key: "date",
       header: "Date",
-      sortValue: (tr) => tr.tradeDate.replace(/\D/g, ""),
       render: (tr) => (
         <span className="whitespace-nowrap text-zinc-400">
           {fmtYmd(tr.tradeDate)}
@@ -515,9 +387,6 @@ function AnalyticsView({ data }: { data: Analytics }) {
     {
       key: "symbol",
       header: "Symbol",
-      sortValue: (tr) => tr.symbol,
-      sortDescFirst: false,
-      searchValue: (tr) => `${tr.symbol} ${data.names?.[tr.symbol] ?? ""}`,
       render: (tr) => (
         <span className="font-semibold text-zinc-100">
           {tr.symbol}
@@ -533,9 +402,6 @@ function AnalyticsView({ data }: { data: Analytics }) {
       key: "qty",
       header: "Qty",
       align: "right",
-      sortValue: (tr) => tr.quantity,
-      filterValue: (tr) => (tr.quantity >= 0 ? "BUY" : "SELL"),
-      filterLabel: "Side",
       render: (tr) => (
         <span className="text-zinc-300">{qtyFmt(tr.quantity)}</span>
       ),
@@ -544,7 +410,6 @@ function AnalyticsView({ data }: { data: Analytics }) {
       key: "price",
       header: "Price",
       align: "right",
-      sortValue: (tr) => tr.tradePrice,
       render: (tr) => (
         <span className="text-zinc-300">
           {tr.tradePrice == null ? "—" : money(tr.tradePrice)}
@@ -555,7 +420,6 @@ function AnalyticsView({ data }: { data: Analytics }) {
       key: "pnl",
       header: "P/L",
       align: "right",
-      sortValue: (tr) => tr.realizedPnl,
       render: (tr) => (
         <span>
           {moneyFxSigned(tr.realizedPnl, tr.currency)}
@@ -564,23 +428,6 @@ function AnalyticsView({ data }: { data: Analytics }) {
       ),
     },
   ];
-
-  const tradeTools = useTableTools<RecentTrade>({
-    storageKey: "ibkr-trades-tools",
-  });
-  const tradeSort = useTableSort(tradeColumns, {
-    defaultKey: "date",
-    storageKey: "ibkr-trades",
-  });
-  const sortedTrades = tradeSort.applySort(
-    tradeTools.apply(data.recentTrades, tradeColumns),
-  );
-  const tradePager = usePager(sortedTrades, 10);
-  const handleTradeSortChange = (key: string) => {
-    tradeSort.toggleSort(key);
-    tradePager.reset();
-  };
-  const handleTradeToolsChange = () => tradePager.reset();
 
   return (
     <div className="mt-5 border-t border-zinc-800 pt-4">
@@ -617,26 +464,10 @@ function AnalyticsView({ data }: { data: Analytics }) {
         <>
           {data.symbols.length > 0 && (
             <div className="mt-4 overflow-hidden rounded-xl border border-zinc-800">
-              <div className="border-b border-zinc-800/60 px-3 py-2">
-                <TableToolbar
-                  tools={symTools}
-                  columns={symbolColumns}
-                  rows={data.symbols}
-                  searchPlaceholder="Search symbol…"
-                  onChange={handleSymToolsChange}
-                />
-              </div>
               <DataTable
                 columns={symbolColumns}
                 rows={symPager.rows}
                 keyOf={(s) => s.symbol}
-                sort={symSort.sort}
-                onSortChange={handleSymSortChange}
-                emptyText={
-                  symTools.hasActive
-                    ? "No symbols match the current filters."
-                    : undefined
-                }
                 footer={
                   <Pagination
                     page={symPager.page}
@@ -653,26 +484,10 @@ function AnalyticsView({ data }: { data: Analytics }) {
                 Recent trades
               </h4>
               <div className="mt-2 overflow-hidden rounded-xl border border-zinc-800">
-                <div className="border-b border-zinc-800/60 px-3 py-2">
-                  <TableToolbar
-                    tools={tradeTools}
-                    columns={tradeColumns}
-                    rows={data.recentTrades}
-                    searchPlaceholder="Search symbol…"
-                    onChange={handleTradeToolsChange}
-                  />
-                </div>
                 <DataTable
                   columns={tradeColumns}
                   rows={tradePager.rows}
                   keyOf={(tr) => tr.id}
-                  sort={tradeSort.sort}
-                  onSortChange={handleTradeSortChange}
-                  emptyText={
-                    tradeTools.hasActive
-                      ? "No trades match the current filters."
-                      : undefined
-                  }
                   footer={
                     <Pagination
                       page={tradePager.page}
@@ -1029,48 +844,8 @@ function BrowserBrokerCard({
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [importStatus, setImportStatus] = useState<string | null>(null);
-  /** Epoch ms until which syncs are blocked after an IBKR 1018 rate limit. */
-  const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
   const utils = api.useUtils();
   const autoStarted = useRef(false);
-  /**
-   * Stream-interrupt auto-retry (mobile app-switch): tRPC's streaming link
-   * throws "Invalid response or stream interrupted" when the OS suspends the
-   * page's network mid-sync. Counts consecutive retries (max 2) with the
-   * timer handle so a late success can cancel them.
-   */
-  const streamRetries = useRef(0);
-  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const credsRef = useRef(creds);
-  credsRef.current = creds;
-
-  // Keep the cooldown label ticking while it is active.
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (cooldownUntil == null) return;
-    const t = setInterval(() => {
-      if (Date.now() >= cooldownUntil) {
-        setCooldownUntil(null);
-        try {
-          localStorage.removeItem(COOLDOWN_KEY);
-        } catch {
-          /* ignore */
-        }
-      }
-      // Re-render so the "retry after HH:MM" label counts down.
-      setTick((n) => n + 1);
-    }, 15000);
-    return () => clearInterval(t);
-  }, [cooldownUntil]);
-
-  const cooldownLabel =
-    cooldownUntil != null && Date.now() < cooldownUntil
-      ? new Date(cooldownUntil).toLocaleString("en-US", {
-          hour: "numeric",
-          minute: "2-digit",
-        })
-      : null;
-  const coolingDown = cooldownLabel != null;
 
   const { data: session } = useSession();
   const savedQ = api.ibkr.savedCredentials.useQuery(undefined, {
@@ -1081,20 +856,6 @@ function BrowserBrokerCard({
   const sync = api.ibkr.sync.useMutation({
     onSuccess: (data) => {
       setError(null);
-      streamRetries.current = 0;
-      if (retryTimer.current) {
-        clearTimeout(retryTimer.current);
-        retryTimer.current = null;
-      }
-      setCooldownUntil(null);
-      try {
-        localStorage.removeItem(COOLDOWN_KEY);
-      } catch {
-        /* ignore */
-      }
-      track("ibkr_sync_completed", {
-        holdings_count_bucket: countBucket(data.positions?.length ?? 0),
-      });
       const snap = { at: new Date().toISOString(), data };
       setSnapshot(snap);
       try {
@@ -1125,50 +886,7 @@ function BrowserBrokerCard({
         });
       }
     },
-    onError: (e) => {
-      // Mobile app-switch during the 10–30s IBKR fetch kills the response
-      // stream; the raw tRPC link error ("Invalid response or stream
-      // interrupted") means nothing to the user, so retry automatically a
-      // couple of times before surfacing a human message.
-      const interrupted = /stream interrupted|invalid response/i.test(e.message);
-      if (interrupted && streamRetries.current < 2) {
-        streamRetries.current += 1;
-        setError(
-          `Connection was interrupted (switching apps?) — retrying… (${streamRetries.current}/2)`,
-        );
-        if (retryTimer.current) clearTimeout(retryTimer.current);
-        // Re-run with the same input the failed attempt used (local creds
-        // or server-saved, matching every sync.mutate call site).
-        const input = credsRef.current ?? undefined;
-        retryTimer.current = setTimeout(() => {
-          if (getCooldownUntil() != null) return; // IBKR 1018 cooldown
-          sync.mutate(input);
-        }, 2000);
-        return;
-      }
-      const blocked = /HTTP 403|HTTP 429/.test(e.message);
-      setError(
-        interrupted
-          ? "The sync was interrupted (e.g. switching apps mid-sync) — tap Sync now to retry."
-          : blocked
-            ? "IBKR is temporarily blocking syncs — cooling down 10 minutes, then try again. If it persists, regenerate the Flex token in Client Portal."
-            : e.message,
-      );
-      // IBKR 1018 = rate limited, 403/429 = blocked/throttled: block every
-      // sync path for 10 minutes so neither the user nor auto-sync can
-      // hammer through it. Repeat violations can lock the token or extend
-      // an IP block (2026-10-09: 1018s escalated to a 403 after repeated
-      // syncs kept firing through the throttle).
-      if (/1018|1019|HTTP 403|HTTP 429|rate.?limited|throttled/i.test(e.message)) {
-        const until = Date.now() + COOLDOWN_MS;
-        setCooldownUntil(until);
-        try {
-          localStorage.setItem(COOLDOWN_KEY, String(until));
-        } catch {
-          /* ignore */
-        }
-      }
-    },
+    onError: (e) => setError(e.message),
   });
 
   const importMut = api.portfolio.importIbkrTrades.useMutation({
@@ -1295,15 +1013,12 @@ function BrowserBrokerCard({
   useEffect(() => {
     setCreds(loadCreds());
     setSnapshot(loadSnapshot());
-    // A 1018 cooldown survives reloads — keep blocking until it expires.
-    setCooldownUntil(getCooldownUntil());
   }, []);
 
   // Self update: auto-sync on page load when the cached snapshot is stale.
   useEffect(() => {
     if (creds === undefined || creds === null || autoStarted.current) return;
     autoStarted.current = true;
-    if (getCooldownUntil() != null) return; // IBKR 1018 cooldown: don't hammer
     const snap = loadSnapshot();
     const stale =
       !snap || Date.now() - new Date(snap.at).getTime() > AUTO_SYNC_AFTER_MS;
@@ -1329,7 +1044,6 @@ function BrowserBrokerCard({
       return;
     }
     savedAutoStarted.current = true;
-    if (getCooldownUntil() != null) return; // IBKR 1018 cooldown: don't hammer
     const snap = loadSnapshot();
     const stale =
       !snap || Date.now() - new Date(snap.at).getTime() > AUTO_SYNC_AFTER_MS;
@@ -1338,8 +1052,6 @@ function BrowserBrokerCard({
   }, [creds, session?.user, savedQ.data?.saved, showForm]);
 
   const data = sync.data ?? snapshot?.data ?? null;
-  const bf = data?.backfill ?? null;
-  const bfStatus = backfillStatus(bf);
 
   const lastSync = sync.data
     ? new Date()
@@ -1392,14 +1104,6 @@ function BrowserBrokerCard({
               {importStatus && (
                 <p className="mt-1 text-xs text-sky-400/90">{importStatus}</p>
               )}
-              {bf && bfStatus && (
-                <>
-                  <p className={`mt-1 text-xs ${BACKFILL_TONE[bfStatus.tone]}`}>
-                    {bfStatus.text}
-                  </p>
-                  <BackfillBar bf={bf} />
-                </>
-              )}
             </div>
             <GearMenu
               items={[
@@ -1410,18 +1114,11 @@ function BrowserBrokerCard({
                         size={15}
                         className={sync.isPending ? "animate-spin" : ""}
                       />
-                      {sync.isPending
-                        ? "Syncing…"
-                        : coolingDown
-                          ? `Cooling down… retry after ${cooldownLabel}`
-                          : "Sync now"}
+                      {sync.isPending ? "Syncing…" : "Sync now"}
                     </>
                   ),
-                  onClick: () => {
-                    streamRetries.current = 0;
-                    sync.mutate(undefined);
-                  },
-                  disabled: sync.isPending || coolingDown,
+                  onClick: () => sync.mutate(undefined),
+                  disabled: sync.isPending,
                 },
                 {
                   label: "Use different credentials",
@@ -1526,18 +1223,11 @@ function BrowserBrokerCard({
             size={15}
             className={sync.isPending ? "animate-spin" : ""}
           />
-          {sync.isPending
-            ? "Syncing…"
-            : coolingDown
-              ? `Cooling down… retry after ${cooldownLabel}`
-              : "Sync now"}
+          {sync.isPending ? "Syncing…" : "Sync now"}
         </>
       ),
-      onClick: () => {
-        streamRetries.current = 0;
-        sync.mutate(creds);
-      },
-      disabled: sync.isPending || coolingDown,
+      onClick: () => sync.mutate(creds),
+      disabled: sync.isPending,
     },
   ];
   if (session?.user) {
@@ -1603,14 +1293,6 @@ function BrowserBrokerCard({
           </p>
           {importStatus && (
             <p className="mt-1 text-xs text-sky-400/90">{importStatus}</p>
-          )}
-          {bf && bfStatus && (
-            <>
-              <p className={`mt-1 text-xs ${BACKFILL_TONE[bfStatus.tone]}`}>
-                {bfStatus.text}
-              </p>
-              <BackfillBar bf={bf} />
-            </>
           )}
         </div>
         <GearMenu items={gearItems} />

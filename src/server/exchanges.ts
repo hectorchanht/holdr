@@ -1,9 +1,9 @@
 /**
- * Read-only clients for Coinbase (Advanced Trade), Binance (Spot) and Kraken.
+ * Read-only clients for Coinbase (Advanced Trade) and Binance (Spot).
  *
  * Runs on Cloudflare Workers and Node with zero dependencies (WebCrypto +
- * global fetch only). NEVER calls trading/order endpoints — balances, spot
- * trade history (read-only fills, for cost basis) and public prices only.
+ * global fetch only). NEVER calls trading/order endpoints — balances and
+ * public prices only.
  *
  * Number discipline (Hector's requirement): exchange balance endpoints return
  * NATIVE asset quantities (e.g. "0.05" BTC), never fiat values. We keep the
@@ -65,39 +65,6 @@ export function mulDecimal(a: Decimal, b: Decimal): Decimal {
   return { int: a.int * b.int, scale: a.scale + b.scale };
 }
 
-/**
- * a / b, rounded half-up to `scale` decimal places. Exact BigInt math —
- * no floats. Throws ExchangeError on division by zero.
- */
-export function divDecimal(a: Decimal, b: Decimal, scale: number): Decimal {
-  if (b.int === 0n) throw new ExchangeError("binance", "Division by zero.");
-  const neg = (a.int < 0n) !== (b.int < 0n);
-  const ai = a.int < 0n ? -a.int : a.int;
-  const bi = b.int < 0n ? -b.int : b.int;
-  // a/b = (ai * 10^b.scale) / (bi * 10^a.scale); scale up for `scale` decimals.
-  const num = ai * 10n ** BigInt(b.scale + scale);
-  const den = bi * 10n ** BigInt(a.scale);
-  let q = num / den;
-  if ((num % den) * 2n >= den) q += 1n; // half-up
-  return { int: neg ? -q : q, scale };
-}
-
-/** a - b, exact. */
-export function subDecimal(a: Decimal, b: Decimal): Decimal {
-  const scale = Math.max(a.scale, b.scale);
-  const ai = a.int * 10n ** BigInt(scale - a.scale);
-  const bi = b.int * 10n ** BigInt(scale - b.scale);
-  return { int: ai - bi, scale };
-}
-
-/** Compare two decimals: -1 | 0 | 1. */
-export function cmpDecimal(a: Decimal, b: Decimal): number {
-  const scale = Math.max(a.scale, b.scale);
-  const ai = a.int * 10n ** BigInt(scale - a.scale);
-  const bi = b.int * 10n ** BigInt(scale - b.scale);
-  return ai < bi ? -1 : ai > bi ? 1 : 0;
-}
-
 export function isZeroDecimal(d: Decimal): boolean {
   return d.int === 0n;
 }
@@ -141,7 +108,7 @@ export function formatCents(cents: bigint): string {
 /* Errors                                                              */
 /* ------------------------------------------------------------------ */
 
-export type ExchangeName = "coinbase" | "binance" | "kraken";
+export type ExchangeName = "coinbase" | "binance";
 
 export class ExchangeError extends Error {
   exchange: ExchangeName;
@@ -158,13 +125,13 @@ export class ExchangeError extends Error {
 /* HMAC helpers (WebCrypto — works on Workers and Node 18+)            */
 /* ------------------------------------------------------------------ */
 
-function b64ToBytes(b64: string, exchange: ExchangeName = "coinbase"): Uint8Array {
+function b64ToBytes(b64: string): Uint8Array {
   const clean = b64.trim();
   let bin: string;
   try {
     bin = atob(clean);
   } catch {
-    throw new ExchangeError(exchange, "API secret is not valid base64.");
+    throw new ExchangeError("coinbase", "API secret is not valid base64.");
   }
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
@@ -193,23 +160,6 @@ async function hmacSha256(keyBytes: Uint8Array, message: string): Promise<Uint8A
   );
   const sig = await crypto.subtle.sign("HMAC", key, te.encode(message));
   return new Uint8Array(sig);
-}
-
-async function hmacSha512(keyBytes: Uint8Array, messageBytes: Uint8Array): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    keyBytes.buffer as ArrayBuffer,
-    { name: "HMAC", hash: "SHA-512" },
-    false,
-    ["sign"],
-  );
-  const sig = await crypto.subtle.sign("HMAC", key, messageBytes.buffer as ArrayBuffer);
-  return new Uint8Array(sig);
-}
-
-async function sha256Bytes(data: Uint8Array): Promise<Uint8Array> {
-  const digest = await crypto.subtle.digest("SHA-256", data.buffer as ArrayBuffer);
-  return new Uint8Array(digest);
 }
 
 /* ------------------------------------------------------------------ */
@@ -252,11 +202,9 @@ async function readJson(res: Response, exchange: ExchangeName, what: string): Pr
 
 function hintForStatus(exchange: ExchangeName, status: number): string {
   if (status === 401 || status === 403) {
-    if (exchange === "coinbase")
-      return " Check that the API key is correct and has not been deleted.";
-    if (exchange === "binance")
-      return " Check the API key/secret and that the key has 'Enable Reading' permission (no trading permission needed). If the error mentions a restricted location, Binance is geo-blocking this server's region.";
-    return " Check the API key/secret and that the key has query-funds permission (no trading permission needed).";
+    return exchange === "coinbase"
+      ? " Check that the API key is correct and has not been deleted."
+      : " Check the API key/secret and that the key has 'Enable Reading' permission (no trading permission needed). If the error mentions a restricted location, Binance is geo-blocking this server's region.";
   }
   if (status === 429) return " Rate limited — wait a minute and sync again.";
   if (status === 451)
@@ -570,393 +518,6 @@ export function validateBinanceDirectPayload(
 }
 
 /* ------------------------------------------------------------------ */
-/* Binance spot trade history → real cost basis                        */
-/*                                                                     */
-/* GET /api/v3/myTrades (or the WS API `myTrades` method — same shape) */
-/* returns every fill the account ever made on one pair. From those     */
-/* REAL trades we compute each asset's average cost in USDT, which the  */
-/* app treats as USD 1:1 (the same peg:1 convention the valuation side  */
-/* already uses for USDT balances).                                    */
-/*                                                                     */
-/* HONESTY RULES — Hector: "make sure all numbers are real".           */
-/* - Only trades quoted in a USD-pegged stablecoin feed the cost basis. */
-/*   A trade quoted in BTC/ETH/BNB has a real price, but expressing it  */
-/*   in USDT would need that quote asset's historical price — which we  */
-/*   don't have. We skip those trades instead of inventing a rate.      */
-/* - Commissions fold into cost ONLY when denominated in the base or    */
-/*   quote asset (exact, no FX needed). Anything else is ignored.       */
-/* - A sell can never reduce the tracked quantity below zero (deposits  */
-/*   have no trade history): the sell is clamped to the held quantity.  */
-/* Every number out of here is derived from actual exchange fills.      */
-/* ------------------------------------------------------------------ */
-
-/**
- * Quote assets we split trading pairs on, longest first so "BTCUSDT"
- * splits as BTC/USDT and not B/T... — suffix match against this list.
- */
-const QUOTE_ASSETS = [
-  "USDT", "USDC", "FDUSD", "TUSD", "BUSD", "DAI", "USDP",
-  "BTC", "ETH", "BNB", "EUR", "GBP",
-];
-
-/** Split "BTCUSDT" into { base: "BTC", quote: "USDT" }; null when unknown. */
-export function splitSymbolPair(pair: string): { base: string; quote: string } | null {
-  const upper = pair.toUpperCase().trim();
-  for (const q of QUOTE_ASSETS) {
-    if (upper.length > q.length && upper.endsWith(q)) {
-      return { base: upper.slice(0, upper.length - q.length), quote: q };
-    }
-  }
-  return null;
-}
-
-/** One validated Binance spot fill. Prices/qtys are exact decimal strings. */
-export interface BinanceSpotTrade {
-  /** Trading pair, e.g. "BTCUSDT". */
-  pair: string;
-  baseAsset: string;
-  quoteAsset: string;
-  tradeId: number;
-  /** Fill price in the quote asset. */
-  price: string;
-  /** Base-asset quantity filled. */
-  qty: string;
-  /** Quote-asset total (price × qty), as reported by the exchange. */
-  quoteQty: string;
-  commission: string;
-  commissionAsset: string;
-  time: number;
-  /** true = the account bought the base asset. */
-  isBuyer: boolean;
-}
-
-const myTradeRow = z
-  .object({
-    price: z.string(),
-    qty: z.string(),
-    quoteQty: z.string(),
-    commission: z.string().optional(),
-    commissionAsset: z.string().optional(),
-    time: z.number().optional(),
-    id: z.number().optional(),
-    isBuyer: z.boolean(),
-  })
-  .passthrough();
-
-/**
- * Parse one pair's myTrades response into validated fills. Malformed rows
- * are skipped (never fail the whole sync); zero-quantity or non-positive
- * price rows are dropped — they carry no cost information.
- */
-export function parseBinanceMyTrades(pair: string, body: unknown): BinanceSpotTrade[] {
-  const split = splitSymbolPair(pair);
-  if (!split) return [];
-  const rows = Array.isArray(body) ? body : [];
-  const out: BinanceSpotTrade[] = [];
-  for (const raw of rows) {
-    const parsed = myTradeRow.safeParse(raw);
-    if (!parsed.success) continue;
-    const r = parsed.data;
-    let price: Decimal, qty: Decimal, quoteQty: Decimal, commission: Decimal;
-    try {
-      price = parseDecimal(r.price);
-      qty = parseDecimal(r.qty);
-      quoteQty = parseDecimal(r.quoteQty);
-      commission = parseDecimal(r.commission ?? "0");
-    } catch {
-      continue;
-    }
-    if (isZeroDecimal(qty) || isNegativeDecimal(qty)) continue;
-    if (isZeroDecimal(price) || isNegativeDecimal(price)) continue;
-    if (isZeroDecimal(quoteQty) || isNegativeDecimal(quoteQty)) continue;
-    if (isNegativeDecimal(commission)) continue;
-    out.push({
-      pair: pair.toUpperCase(),
-      baseAsset: split.base,
-      quoteAsset: split.quote,
-      tradeId: typeof r.id === "number" && Number.isFinite(r.id) ? r.id : -1,
-      price: decimalToString(price),
-      qty: decimalToString(qty),
-      quoteQty: decimalToString(quoteQty),
-      commission: decimalToString(commission),
-      commissionAsset: (r.commissionAsset ?? "").toUpperCase(),
-      time: typeof r.time === "number" && Number.isFinite(r.time) ? r.time : 0,
-      isBuyer: r.isBuyer,
-    });
-  }
-  // Oldest first, so the average-cost walk is chronological.
-  out.sort((a, b) => a.time - b.time || a.tradeId - b.tradeId);
-  return out;
-}
-
-/**
- * Validate the browser-posted myTrades payload: an array of
- * { symbol: "<PAIR>", trades: <raw myTrades array> }. Untrusted input —
- * shapes are checked, garbage pairs are dropped, garbage rows are skipped
- * by parseBinanceMyTrades. Throws a plain Error on a non-array payload.
- */
-export function validateBinanceTradesPayload(
-  payload: unknown,
-): Array<{ symbol: string; trades: BinanceSpotTrade[] }> {
-  if (payload == null) return [];
-  const parsed = z
-    .array(z.object({ symbol: z.string(), trades: z.array(z.unknown()) }).passthrough())
-    .safeParse(payload);
-  if (!parsed.success) throw new Error("Invalid Binance trades payload.");
-  const out: Array<{ symbol: string; trades: BinanceSpotTrade[] }> = [];
-  for (const entry of parsed.data) {
-    const symbol = entry.symbol.toUpperCase().trim();
-    if (!symbol) continue;
-    const trades = parseBinanceMyTrades(symbol, entry.trades);
-    if (trades.length > 0) out.push({ symbol, trades });
-  }
-  return out;
-}
-
-export interface AssetCostBasis {
-  asset: string;
-  /** Average cost in USDT (== USD by the app's peg:1 convention), exact decimal string; null when unknowable. */
-  avgCostUsd: string | null;
-  /** Number of REAL trades this basis was computed from. */
-  tradeCount: number;
-}
-
-/**
- * Average cost per asset from real Binance spot fills.
- *
- * - USD-pegged assets cost exactly $1 (peg:1, same as valuation).
- * - Other assets: only fills quoted in a USD-pegged stablecoin count.
- *   Non-pegged-quote fills (e.g. ETHBTC) are skipped — see HONESTY RULES.
- * - Average-cost method: buys add quoteQty to the cost pool; sells remove
- *   cost proportionally and never drive the tracked quantity negative.
- * - Commission folds in exactly when it's in the base asset (reduces the
- *   received quantity) or the quote asset (adds to cost). Otherwise ignored.
- */
-export function computeBinanceCostBasis(
-  perPair: Array<{ symbol: string; trades: BinanceSpotTrade[] }>,
-): AssetCostBasis[] {
-  const byAsset = new Map<string, BinanceSpotTrade[]>();
-  for (const { trades } of perPair) {
-    for (const t of trades) {
-      const arr = byAsset.get(t.baseAsset);
-      if (arr) arr.push(t);
-      else byAsset.set(t.baseAsset, [t]);
-    }
-  }
-  const out: AssetCostBasis[] = [];
-  for (const [asset, trades] of byAsset) {
-    if (isUsdPegged(asset)) {
-      out.push({ asset, avgCostUsd: "1", tradeCount: 0 });
-      continue;
-    }
-    const usable = trades.filter((t) => isUsdPegged(t.quoteAsset));
-    let qty = { int: 0n, scale: 0 } as Decimal;
-    let cost = { int: 0n, scale: 0 } as Decimal;
-    let used = 0;
-    for (const t of usable) {
-      const q = parseDecimal(t.qty);
-      const qq = parseDecimal(t.quoteQty);
-      const comm = parseDecimal(t.commission);
-      const commAsset = t.commissionAsset;
-      if (t.isBuyer) {
-        let addQty = q;
-        let addCost = qq;
-        if (!isZeroDecimal(comm)) {
-          if (commAsset === t.baseAsset) addQty = subDecimal(addQty, comm);
-          else if (commAsset === t.quoteAsset) addCost = addDecimal(addCost, comm);
-          // else: can't convert without historical FX — ignored (honest).
-        }
-        if (isNegativeDecimal(addQty) || isZeroDecimal(addQty)) continue;
-        qty = addDecimal(qty, addQty);
-        cost = addDecimal(cost, addCost);
-        used++;
-      } else {
-        if (isZeroDecimal(qty)) continue; // nothing tracked — deposit sale; skip
-        // Clamp the sell to the tracked quantity (deposits have no cost basis).
-        const sellQty = cmpDecimal(q, qty) > 0 ? qty : q;
-        const ratio = divDecimal(sellQty, qty, 12);
-        cost = subDecimal(cost, mulDecimal(cost, ratio));
-        qty = subDecimal(qty, sellQty);
-        if (isNegativeDecimal(cost)) cost = { int: 0n, scale: 0 };
-        if (isNegativeDecimal(qty)) qty = { int: 0n, scale: 0 };
-        used++;
-      }
-    }
-    out.push({
-      asset,
-      avgCostUsd: isZeroDecimal(qty) ? null : decimalToString(divDecimal(cost, qty, 8)),
-      tradeCount: used,
-    });
-  }
-  return out.sort((a, b) => a.asset.localeCompare(b.asset));
-}
-
-/* ------------------------------------------------------------------ */
-/* Kraken                                                              */
-/*                                                                     */
-/* Auth: API-Key header + API-Sign = base64(HMAC-SHA512(               */
-/*       urlPath + SHA256(nonce + postData), base64decode(secret))).    */
-/* Balances + public ticker only — no order endpoints are ever called. */
-/* ------------------------------------------------------------------ */
-
-const KRAKEN_API = "https://api.kraken.com";
-const KRAKEN_BALANCE_PATH = "/0/private/Balance";
-
-/**
- * Sign a Kraken private request. `postData` is the urlencoded body
- * (e.g. "nonce=1234567890000"), `urlPath` the request path.
- */
-export async function krakenSignature(
-  apiSecretB64: string,
-  urlPath: string,
-  nonce: string,
-  postData: string,
-): Promise<string> {
-  const keyBytes = b64ToBytes(apiSecretB64, "kraken");
-  const sha = await sha256Bytes(te.encode(nonce + postData));
-  const pathBytes = te.encode(urlPath);
-  const message = new Uint8Array(pathBytes.length + sha.length);
-  message.set(pathBytes, 0);
-  message.set(sha, pathBytes.length);
-  const sig = await hmacSha512(keyBytes, message);
-  return bytesToB64(sig);
-}
-
-/**
- * Map a Kraken asset code to our canonical symbol.
- * Kraken prefixes classic assets: X for crypto (XXBT, XETH), Z for fiat
- * (ZUSD, ZEUR). Newer assets have no prefix (SOL, DOT). Staked balances
- * carry a ".S" suffix (XTZ.S). XBT is Bitcoin — we canonicalize to BTC.
- */
-export function mapKrakenAsset(code: string): string {
-  let c = code.toUpperCase().trim();
-  // Staked / margin-suffixed balances collapse onto the base asset.
-  c = c.replace(/\.(S|M)$/, "");
-  if (c.length > 3 && (c.startsWith("X") || c.startsWith("Z"))) {
-    c = c.slice(1);
-  }
-  if (c === "XBT") return "BTC";
-  return c;
-}
-
-/** Kraken alt-name for the public ticker (BTC trades as XBT on Kraken). */
-function krakenTickerAlt(asset: string): string {
-  const u = asset.toUpperCase();
-  if (u === "BTC") return "XBT";
-  return u;
-}
-
-interface KrakenBalanceResponse {
-  error?: string[];
-  result?: Record<string, string>;
-}
-
-/** Parse a POST /0/private/Balance body into native balances (pure, testable). */
-export function parseKrakenBalance(body: unknown): NativeBalance[] {
-  const root = body as KrakenBalanceResponse | null;
-  if (root?.error && root.error.length > 0) {
-    throw new ExchangeError("kraken", `Kraken error: ${root.error.join("; ").slice(0, 200)}`);
-  }
-  const result = root?.result ?? {};
-  const out: NativeBalance[] = [];
-  for (const [code, value] of Object.entries(result)) {
-    const asset = mapKrakenAsset(code);
-    if (!asset) continue;
-    let qty: Decimal;
-    try {
-      qty = parseDecimal(value ?? "0");
-    } catch {
-      continue;
-    }
-    if (isZeroDecimal(qty)) continue;
-    out.push({ asset, quantity: decimalToString(qty) });
-  }
-  return out;
-}
-
-export async function fetchKrakenBalances(
-  apiKey: string,
-  apiSecret: string,
-  fetcher: FetchFn = fetch,
-): Promise<NativeBalance[]> {
-  const nonce = Date.now().toString();
-  const postData = `nonce=${encodeURIComponent(nonce)}`;
-  let signature: string;
-  try {
-    signature = await krakenSignature(apiSecret, KRAKEN_BALANCE_PATH, nonce, postData);
-  } catch (e) {
-    if (e instanceof ExchangeError) throw e;
-    throw new ExchangeError("kraken", "Failed to sign request.");
-  }
-  let res: Response;
-  try {
-    res = await fetcher(KRAKEN_API + KRAKEN_BALANCE_PATH, {
-      method: "POST",
-      headers: {
-        "API-Key": apiKey,
-        "API-Sign": signature,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: postData,
-    });
-  } catch {
-    throw new ExchangeError("kraken", "Could not reach Kraken. Check your connection.");
-  }
-  let body: unknown;
-  try {
-    body = await readJson(res, "kraken", "Kraken balance request");
-  } catch (e) {
-    if (e instanceof ExchangeError && e.status != null) {
-      throw new ExchangeError("kraken", e.message + hintForStatus("kraken", e.status), e.status);
-    }
-    throw e;
-  }
-  return parseKrakenBalance(body);
-}
-
-/** Kraken's own spot price for ASSET (public, no auth). Returns exact decimal string. */
-export async function fetchKrakenPrice(
-  asset: string,
-  fetcher: FetchFn = fetch,
-): Promise<{ price: string; source: string } | null> {
-  const upper = asset.toUpperCase();
-  if (isUsdPegged(upper)) {
-    return { price: "1", source: "peg:1" };
-  }
-  const alt = krakenTickerAlt(upper);
-  // Try USD pair first, then USDT (Kraken lists most assets against both).
-  for (const quote of ["USD", "USDT"]) {
-    const pair = `${alt}${quote}`;
-    let res: Response;
-    try {
-      res = await fetcher(
-        `${KRAKEN_API}/0/public/Ticker?pair=${encodeURIComponent(pair)}`,
-      );
-    } catch {
-      return null;
-    }
-    if (!res.ok) continue;
-    try {
-      const body = (await res.json()) as {
-        error?: string[];
-        result?: Record<string, { c?: [string, string] }>;
-      };
-      if (body?.error && body.error.length > 0) continue;
-      const keys = Object.keys(body?.result ?? {});
-      if (keys.length === 0) continue;
-      const last = body.result![keys[0]!]!.c?.[0];
-      if (!last) continue;
-      const price = parseDecimal(last);
-      if (isZeroDecimal(price) || isNegativeDecimal(price)) continue;
-      return { price: decimalToString(price), source: `kraken:ticker:${pair}` };
-    } catch {
-      continue;
-    }
-  }
-  return null;
-}
-
-/* ------------------------------------------------------------------ */
 /* Valuation                                                           */
 /*                                                                     */
 /* DECISION (documented): we fetch the exchange's own spot price at     */
@@ -1015,51 +576,14 @@ export type PriceFetcher = (
  * Price fetches run with bounded concurrency; a failed price leaves the
  * asset unpriced (NOT zeroed).
  */
-/**
- * Merge duplicate assets by summing quantities (exact decimal math).
- * Binance's /api/v3/account can list the same asset twice (spot + margin
- * entries), and the browser-posted direct-sync payload can too. Without
- * this merge, createMany hits the ExchangeBalance (userId, exchange, asset)
- * UNIQUE constraint — and the persist fails AFTER the deleteMany, wiping
- * the stored balances. First occurrence wins the display order.
- */
-export function dedupeBalances(balances: NativeBalance[]): NativeBalance[] {
-  const sums = new Map<string, Decimal>();
-  const order: string[] = [];
-  for (const b of balances) {
-    const key = b.asset.toUpperCase();
-    if (!key) continue;
-    let qty: Decimal;
-    try {
-      qty = parseDecimal(b.quantity);
-    } catch {
-      continue;
-    }
-    const prev = sums.get(key);
-    if (prev === undefined) {
-      sums.set(key, qty);
-      order.push(key);
-    } else {
-      sums.set(key, addDecimal(prev, qty));
-    }
-  }
-  return order.map((asset) => ({
-    asset,
-    quantity: decimalToString(sums.get(asset)!),
-  }));
-}
-
 export async function valuate(
   balances: NativeBalance[],
   priceFor: PriceFetcher,
   nowIso: string,
 ): Promise<Valuation> {
-  // Binance can carry the same asset twice — merge before pricing so the
-  // persist never violates the UNIQUE (userId, exchange, asset) constraint.
-  const deduped = dedupeBalances(balances);
   const items: ValuedBalance[] = [];
   // Bounded concurrency: 6 at a time.
-  const queue = [...deduped];
+  const queue = [...balances];
   const results = new Map<string, ValuedBalance>();
   const workers = Array.from({ length: Math.min(6, queue.length) }, async () => {
     while (queue.length > 0) {
@@ -1092,7 +616,7 @@ export async function valuate(
     }
   });
   await Promise.all(workers);
-  for (const b of deduped) {
+  for (const b of balances) {
     const r = results.get(b.asset);
     if (r) items.push(r);
   }

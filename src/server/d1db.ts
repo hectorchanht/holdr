@@ -23,8 +23,6 @@ export interface HoldingRow {
   avgCost: number;
   createdAt: Date;
   updatedAt: Date;
-  /** Soft delete timestamp — null means active. Cleared holdings are recoverable. */
-  deletedAt: Date | null;
 }
 
 export interface TransactionRow {
@@ -43,19 +41,6 @@ export interface TransactionRow {
   createdAt: Date;
 }
 
-/** Tombstone for a user-deleted transaction — stops IBKR auto-sync resurrecting it. */
-export interface DeletedTransactionRow {
-  id: string;
-  symbol: string;
-  type: string;
-  quantity: number;
-  price: number;
-  executedAt: Date;
-  /** IBKR trade key when the deleted row had one; null for manual rows. */
-  externalId: string | null;
-  deletedAt: Date;
-}
-
 export interface BrokerPositionRow {
   id: string;
   accountId: string;
@@ -65,7 +50,6 @@ export interface BrokerPositionRow {
   currency: string;
   quantity: number;
   markPrice: number | null;
-  costBasisPrice: number | null;
   syncedAt: Date;
 }
 
@@ -99,22 +83,6 @@ export interface BrokerCashFlowRow {
   syncedAt: Date;
 }
 
-/** Backfilled (older-window) cash flows; the main sync wipes BrokerCashFlow. */
-export interface BrokerCashFlowHistoryRow extends BrokerCashFlowRow {
-  userId: string;
-}
-
-export interface BrokerCashFlowHistoryData {
-  userId: string;
-  accountId: string;
-  symbol?: string | null;
-  description?: string | null;
-  currency: string;
-  dateTime: string;
-  amount: number;
-  type: string;
-}
-
 export interface BrokerCredentialRow {
   id: string;
   userId: string;
@@ -137,19 +105,6 @@ export interface ExchangeCredentialRow {
   updatedAt: Date;
 }
 
-/** One row per user: how far back the IBKR history backfill has reached. */
-export interface BrokerBackfillRow {
-  id: string;
-  userId: string;
-  /** Oldest date (YYYYMMDD) already covered by fetched windows. */
-  oldestCovered: string;
-  /** Consecutive fetched windows with zero trades and zero cash flows. */
-  emptyStreak: number;
-  /** Set when the floor date or the empty cap was reached. */
-  doneAt: Date | null;
-  updatedAt: Date;
-}
-
 export interface ExchangeBalanceRow {
   id: string;
   userId: string;
@@ -163,10 +118,6 @@ export interface ExchangeBalanceRow {
   /** Integer USD cents as text; null when unpriced. */
   valueCents: string | null;
   currency: string;
-  /** Average cost in USD from real trade history; null when unknowable. */
-  avgCostUsd: string | null;
-  /** How many real fills avgCostUsd was computed from; null when unknown. */
-  costTradeCount: number | null;
   syncedAt: Date;
 }
 
@@ -189,8 +140,7 @@ export interface PortfolioSnapshotRow {
   id: string;
   date: string; // YYYY-MM-DD (local)
   marketValue: number;
-  /** Null when any position lacked a recorded cost — unknown is never $0. */
-  costBasis: number | null;
+  costBasis: number;
   totalPL: number | null;
   dayPL: number | null;
   holdingsCount: number;
@@ -225,18 +175,6 @@ export interface YahooDailyBarRow {
   close: string;
   adjclose: string | null;
   fetchedAt: Date;
-}
-
-export interface SyncTokenRow {
-  id: string;
-  userId: string;
-  name: string;
-  /** SHA-256 hex of the bearer token — the plaintext is never stored. */
-  tokenHash: string;
-  scope: string;
-  createdAt: Date;
-  lastUsedAt: Date | null;
-  revokedAt: Date | null;
 }
 
 type SortDir = "asc" | "desc";
@@ -292,26 +230,6 @@ export interface AppDb {
       take?: number;
     }): Promise<BrokerCashFlowRow[]>;
   } & BulkInsertable<BrokerCashFlowData>;
-  brokerCashFlowHistory: {
-    findMany(args: {
-      where: { userId: string };
-      orderBy: Array<{ dateTime?: SortDir }>;
-    }): Promise<BrokerCashFlowHistoryRow[]>;
-    /**
-     * Idempotent window replace: deletes this user's rows whose dateTime
-     * falls in [fd, td] (YYYYMMDD, compared on the date prefix).
-     * Optional because the local-dev Prisma client does not implement it —
-     * cash-flow backfill requires the D1 binding.
-     */
-    deleteWindow?(
-      userId: string,
-      fd: string,
-      td: string,
-    ): Promise<{ count: number }>;
-    createMany(args: {
-      data: BrokerCashFlowHistoryData[];
-    }): Promise<{ count: number }>;
-  };
   brokerPosition: {
     findMany(args: {
       orderBy: Array<{ symbol?: SortDir; accountId?: SortDir }>;
@@ -331,7 +249,6 @@ export interface AppDb {
         currency: string;
         quantity: number;
         markPrice?: number | null;
-        costBasisPrice?: number | null;
       }>;
     }): Promise<{ count: number }>;
   };
@@ -350,20 +267,6 @@ export interface AppDb {
       };
     }): Promise<BrokerCredentialRow>;
     delete(args: { where: { userId: string } }): Promise<BrokerCredentialRow>;
-  };
-  brokerBackfill: {
-    findUnique(args: {
-      where: { userId: string };
-    }): Promise<BrokerBackfillRow | null>;
-    upsert(args: {
-      where: { userId: string };
-      update: {
-        oldestCovered: string;
-        emptyStreak: number;
-        doneAt?: Date | null;
-      };
-      create: { userId: string; oldestCovered: string; emptyStreak?: number };
-    }): Promise<BrokerBackfillRow>;
   };
   exchangeCredential: {
     findFirst(args: {
@@ -407,8 +310,6 @@ export interface AppDb {
         priceAt?: string | null;
         valueCents?: string | null;
         currency?: string;
-        avgCostUsd?: string | null;
-        costTradeCount?: number | null;
       }>;
     }): Promise<{ count: number }>;
   };
@@ -430,32 +331,6 @@ export interface AppDb {
       };
     }): Promise<ExchangeSyncRow>;
   };
-  /**
-   * Bearer tokens for local sync agents. Only hashes are stored; lookups
-   * are by tokenHash (ingest auth) or by userId (token management UI).
-   */
-  syncToken: {
-    findFirst(args: {
-      where: { tokenHash: string };
-    }): Promise<SyncTokenRow | null>;
-    findMany(args: {
-      where: { userId: string };
-      orderBy: { createdAt: SortDir };
-    }): Promise<SyncTokenRow[]>;
-    create(args: {
-      data: {
-        userId: string;
-        name: string;
-        tokenHash: string;
-        scope: string;
-      };
-    }): Promise<SyncTokenRow>;
-    update(args: {
-      where: { id: string };
-      data: { lastUsedAt?: Date; revokedAt?: Date | null };
-    }): Promise<SyncTokenRow>;
-    delete(args: { where: { id: string } }): Promise<SyncTokenRow>;
-  };
   holding: {
     findMany(args: { orderBy: { symbol: SortDir } }): Promise<HoldingRow[]>;
     upsert(args: {
@@ -463,17 +338,7 @@ export interface AppDb {
       update: { quantity: number; avgCost: number };
       create: { symbol: string; quantity: number; avgCost: number };
     }): Promise<HoldingRow>;
-    /**
-     * Soft delete: sets deletedAt instead of removing the row, so cleared
-     * holdings are recoverable via `restore`. findMany excludes soft-deleted
-     * rows; upsert revives them.
-     */
     deleteMany(args: { where: { symbol: string } }): Promise<{ count: number }>;
-    /**
-     * Recover soft-deleted holdings: clears deletedAt.
-     * Optional — the local-dev Prisma client doesn't implement it.
-     */
-    restore?(args: { where: { symbol: string } }): Promise<{ count: number }>;
     updateMany(args: {
       where: { symbol: string; name: null };
       data: { name: string };
@@ -501,54 +366,24 @@ export interface AppDb {
     }): Promise<TransactionRow>;
     delete(args: { where: { id: string } }): Promise<TransactionRow>;
     deleteMany(args: { where: { symbol: string } }): Promise<{ count: number }>;
-    update(args: {
-      where: { id: string };
-      data: {
-        type?: string;
-        quantity?: number;
-        price?: number;
-        fees?: number;
-        executedAt?: Date | string;
-        note?: string | null;
-      };
-    }): Promise<TransactionRow>;
-  };
-  /**
-   * Tombstones for user-deleted transactions. importIbkrTrades consults
-   * this before inserting, so a deleted trade can't be resurrected by the
-   * next auto-sync. Local-dev Prisma and the D1 adapter both implement it.
-   */
-  deletedTransaction: {
-    findMany(): Promise<DeletedTransactionRow[]>;
-    create(args: {
-      data: {
-        symbol: string;
-        type: string;
-        quantity: number;
-        price: number;
-        executedAt: Date | string;
-        externalId?: string | null;
-      };
-    }): Promise<DeletedTransactionRow>;
   };
   portfolioSnapshot: {
     findMany(args: {
       orderBy: Array<{ date?: SortDir }>;
     }): Promise<PortfolioSnapshotRow[]>;
-    deleteMany(): Promise<{ count: number }>;
     upsert(args: {
       where: { date: string };
       create: {
         date: string;
         marketValue: number;
-        costBasis: number | null;
+        costBasis: number;
         totalPL?: number | null;
         dayPL?: number | null;
         holdingsCount?: number;
       };
       update: {
         marketValue: number;
-        costBasis: number | null;
+        costBasis: number;
         totalPL?: number | null;
         dayPL?: number | null;
         holdingsCount?: number;
@@ -647,7 +482,6 @@ function mapBrokerPosition(r: RawRow): BrokerPositionRow {
     currency: r.currency as string,
     quantity: r.quantity as number,
     markPrice: (r.markPrice as number | null) ?? null,
-    costBasisPrice: (r.costBasisPrice as number | null) ?? null,
     syncedAt: toDate(r.syncedAt),
   };
 }
@@ -686,10 +520,6 @@ function mapBrokerCashFlow(r: RawRow): BrokerCashFlowRow {
   };
 }
 
-function mapBrokerCashFlowHistory(r: RawRow): BrokerCashFlowHistoryRow {
-  return { ...mapBrokerCashFlow(r), userId: r.userId as string };
-}
-
 function mapBrokerCredential(r: RawRow): BrokerCredentialRow {
   return {
     id: r.id as string,
@@ -698,17 +528,6 @@ function mapBrokerCredential(r: RawRow): BrokerCredentialRow {
     encQueryId: r.encQueryId as string,
     iv: r.iv as string,
     createdAt: toDate(r.createdAt),
-    updatedAt: toDate(r.updatedAt),
-  };
-}
-
-function mapBrokerBackfill(r: RawRow): BrokerBackfillRow {
-  return {
-    id: r.id as string,
-    userId: r.userId as string,
-    oldestCovered: r.oldestCovered as string,
-    emptyStreak: r.emptyStreak as number,
-    doneAt: r.doneAt == null ? null : toDate(r.doneAt),
     updatedAt: toDate(r.updatedAt),
   };
 }
@@ -739,9 +558,6 @@ function mapExchangeBalance(r: RawRow): ExchangeBalanceRow {
     priceAt: (r.priceAt as string | null) ?? null,
     valueCents: (r.valueCents as string | null) ?? null,
     currency: (r.currency as string) ?? "USD",
-    avgCostUsd: (r.avgCostUsd as string | null) ?? null,
-    costTradeCount:
-      r.costTradeCount == null ? null : Number(r.costTradeCount as number),
     syncedAt: toDate(r.syncedAt),
   };
 }
@@ -761,19 +577,6 @@ function mapExchangeSync(r: RawRow): ExchangeSyncRow {
   };
 }
 
-function mapSyncToken(r: RawRow): SyncTokenRow {
-  return {
-    id: r.id as string,
-    userId: r.userId as string,
-    name: r.name as string,
-    tokenHash: r.tokenHash as string,
-    scope: r.scope as string,
-    createdAt: toDate(r.createdAt),
-    lastUsedAt: r.lastUsedAt == null ? null : toDate(r.lastUsedAt),
-    revokedAt: r.revokedAt == null ? null : toDate(r.revokedAt),
-  };
-}
-
 function mapHolding(r: RawRow): HoldingRow {
   return {
     id: r.id as string,
@@ -783,7 +586,6 @@ function mapHolding(r: RawRow): HoldingRow {
     avgCost: r.avgCost as number,
     createdAt: toDate(r.createdAt),
     updatedAt: toDate(r.updatedAt),
-    deletedAt: r.deletedAt ? toDate(r.deletedAt) : null,
   };
 }
 
@@ -803,25 +605,12 @@ function mapTransaction(r: RawRow): TransactionRow {
   };
 }
 
-function mapDeletedTransaction(r: RawRow): DeletedTransactionRow {
-  return {
-    id: r.id as string,
-    symbol: r.symbol as string,
-    type: r.type as string,
-    quantity: r.quantity as number,
-    price: r.price as number,
-    executedAt: toDate(r.executedAt),
-    externalId: (r.externalId as string | null) ?? null,
-    deletedAt: toDate(r.deletedAt),
-  };
-}
-
 function mapPortfolioSnapshot(r: RawRow): PortfolioSnapshotRow {
   return {
     id: r.id as string,
     date: r.date as string,
     marketValue: r.marketValue as number,
-    costBasis: (r.costBasis as number | null) ?? null,
+    costBasis: r.costBasis as number,
     totalPL: (r.totalPL as number | null) ?? null,
     dayPL: (r.dayPL as number | null) ?? null,
     holdingsCount: (r.holdingsCount as number) ?? 0,
@@ -992,58 +781,6 @@ export function createD1Db(d1: D1Database): AppDb {
     },
   };
 
-  const brokerCashFlowHistory: AppDb["brokerCashFlowHistory"] = {
-    findMany: async (args) => {
-      const { results } = await d1
-        .prepare(
-          `SELECT * FROM "BrokerCashFlowHistory" WHERE "userId" = ?${orderClause(args.orderBy)}`,
-        )
-        .bind(args.where.userId)
-        .all();
-      return (results as unknown as RawRow[]).map(mapBrokerCashFlowHistory);
-    },
-    deleteWindow: async (userId, fd, td) => {
-      const r = await d1
-        .prepare(
-          `DELETE FROM "BrokerCashFlowHistory"
-           WHERE "userId" = ?
-             AND substr("dateTime", 1, 8) >= ?
-             AND substr("dateTime", 1, 8) <= ?`,
-        )
-        .bind(userId, fd, td)
-        .run();
-      return { count: r.meta.changes ?? 0 };
-    },
-    createMany: async (args) => {
-      const now = new Date().toISOString();
-      let count = 0;
-      for (const c of args.data) {
-        await d1
-          .prepare(
-            `INSERT INTO "BrokerCashFlowHistory"
-               ("id", "userId", "accountId", "symbol", "description",
-                "currency", "dateTime", "amount", "type", "syncedAt")
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .bind(
-            crypto.randomUUID(),
-            c.userId,
-            c.accountId,
-            c.symbol ?? null,
-            c.description ?? null,
-            c.currency,
-            c.dateTime,
-            c.amount,
-            c.type,
-            now,
-          )
-          .run();
-        count++;
-      }
-      return { count };
-    },
-  };
-
   const brokerPosition: AppDb["brokerPosition"] = {
     findMany: async (args) => {
       const order = args.orderBy
@@ -1081,8 +818,8 @@ export function createD1Db(d1: D1Database): AppDb {
           .prepare(
             `INSERT INTO "BrokerPosition"
                ("id", "accountId", "symbol", "description", "assetCategory",
-                "currency", "quantity", "markPrice", "costBasisPrice", "syncedAt")
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                "currency", "quantity", "markPrice", "syncedAt")
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .bind(
             crypto.randomUUID(),
@@ -1093,7 +830,6 @@ export function createD1Db(d1: D1Database): AppDb {
             d.currency,
             d.quantity,
             d.markPrice ?? null,
-            d.costBasisPrice ?? null,
             now,
           )
           .run();
@@ -1154,52 +890,6 @@ export function createD1Db(d1: D1Database): AppDb {
         .bind(args.where.userId)
         .run();
       return mapBrokerCredential(row as unknown as RawRow);
-    },
-  };
-
-  const brokerBackfill: AppDb["brokerBackfill"] = {
-    findUnique: async (args) => {
-      const row = await d1
-        .prepare(`SELECT * FROM "BrokerBackfill" WHERE "userId" = ?`)
-        .bind(args.where.userId)
-        .first();
-      return row ? mapBrokerBackfill(row as unknown as RawRow) : null;
-    },
-
-    upsert: async (args) => {
-      const now = new Date().toISOString();
-      const doneAt =
-        args.update.doneAt === undefined
-          ? null
-          : args.update.doneAt === null
-            ? null
-            : args.update.doneAt.toISOString();
-      await d1
-        .prepare(
-          `INSERT INTO "BrokerBackfill"
-             ("id", "userId", "oldestCovered", "emptyStreak", "doneAt", "updatedAt")
-           VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT("userId") DO UPDATE SET
-             "oldestCovered" = excluded."oldestCovered",
-             "emptyStreak" = excluded."emptyStreak",
-             "doneAt" = excluded."doneAt",
-             "updatedAt" = excluded."updatedAt"`,
-        )
-        .bind(
-          crypto.randomUUID(),
-          args.create.userId,
-          args.update.oldestCovered,
-          args.update.emptyStreak,
-          doneAt,
-          now,
-        )
-        .run();
-      const row = await d1
-        .prepare(`SELECT * FROM "BrokerBackfill" WHERE "userId" = ?`)
-        .bind(args.where.userId)
-        .first();
-      if (!row) throw new Error(`upsert failed for broker backfill`);
-      return mapBrokerBackfill(row as unknown as RawRow);
     },
   };
 
@@ -1297,9 +987,8 @@ export function createD1Db(d1: D1Database): AppDb {
           .prepare(
             `INSERT INTO "ExchangeBalance"
                ("id", "userId", "exchange", "asset", "quantity", "priceUsd",
-                "priceSource", "priceAt", "valueCents", "currency", "syncedAt",
-                "avgCostUsd", "costTradeCount")
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                "priceSource", "priceAt", "valueCents", "currency", "syncedAt")
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .bind(
             crypto.randomUUID(),
@@ -1313,8 +1002,6 @@ export function createD1Db(d1: D1Database): AppDb {
             b.valueCents ?? null,
             b.currency ?? "USD",
             now,
-            b.avgCostUsd ?? null,
-            b.costTradeCount ?? null,
           )
           .run();
         count++;
@@ -1368,89 +1055,11 @@ export function createD1Db(d1: D1Database): AppDb {
     },
   };
 
-  const syncToken: AppDb["syncToken"] = {
-    findFirst: async (args) => {
-      const row = await d1
-        .prepare(`SELECT * FROM "SyncToken" WHERE "tokenHash" = ?`)
-        .bind(args.where.tokenHash)
-        .first();
-      return row ? mapSyncToken(row as unknown as RawRow) : null;
-    },
-
-    findMany: async (args) => {
-      const dir = args.orderBy.createdAt === "desc" ? "DESC" : "ASC";
-      const { results } = await d1
-        .prepare(
-          `SELECT * FROM "SyncToken" WHERE "userId" = ? ORDER BY "createdAt" ${dir}`,
-        )
-        .bind(args.where.userId)
-        .all();
-      return (results as unknown as RawRow[]).map(mapSyncToken);
-    },
-
-    create: async (args) => {
-      const d = args.data;
-      const now = new Date().toISOString();
-      const id = crypto.randomUUID();
-      await d1
-        .prepare(
-          `INSERT INTO "SyncToken"
-             ("id", "userId", "name", "tokenHash", "scope", "createdAt", "lastUsedAt", "revokedAt")
-           VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
-        )
-        .bind(id, d.userId, d.name, d.tokenHash, d.scope, now)
-        .run();
-      const row = await d1
-        .prepare(`SELECT * FROM "SyncToken" WHERE "id" = ?`)
-        .bind(id)
-        .first();
-      if (!row) throw new Error(`create failed for sync token`);
-      return mapSyncToken(row as unknown as RawRow);
-    },
-
-    update: async (args) => {
-      const sets: string[] = [];
-      const binds: unknown[] = [];
-      if (args.data.lastUsedAt !== undefined) {
-        sets.push(`"lastUsedAt" = ?`);
-        binds.push(args.data.lastUsedAt.toISOString());
-      }
-      if (args.data.revokedAt !== undefined) {
-        sets.push(`"revokedAt" = ?`);
-        binds.push(args.data.revokedAt ? args.data.revokedAt.toISOString() : null);
-      }
-      if (sets.length > 0) {
-        await d1
-          .prepare(`UPDATE "SyncToken" SET ${sets.join(", ")} WHERE "id" = ?`)
-          .bind(...binds, args.where.id)
-          .run();
-      }
-      const row = await d1
-        .prepare(`SELECT * FROM "SyncToken" WHERE "id" = ?`)
-        .bind(args.where.id)
-        .first();
-      if (!row) throw new Error(`sync token not found`);
-      return mapSyncToken(row as unknown as RawRow);
-    },
-
-    delete: async (args) => {
-      const row = await d1
-        .prepare(`SELECT * FROM "SyncToken" WHERE "id" = ?`)
-        .bind(args.where.id)
-        .first();
-      if (!row) throw new Error(`sync token not found`);
-      await d1.prepare(`DELETE FROM "SyncToken" WHERE "id" = ?`).bind(args.where.id).run();
-      return mapSyncToken(row as unknown as RawRow);
-    },
-  };
-
   const holding: AppDb["holding"] = {
     findMany: async (args) => {
       const dir = args.orderBy.symbol === "desc" ? "DESC" : "ASC";
       const { results } = await d1
-        .prepare(
-          `SELECT * FROM "Holding" WHERE "deletedAt" IS NULL ORDER BY "symbol" ${dir}`,
-        )
+        .prepare(`SELECT * FROM "Holding" ORDER BY "symbol" ${dir}`)
         .all();
       return (results as unknown as RawRow[]).map(mapHolding);
     },
@@ -1460,13 +1069,12 @@ export function createD1Db(d1: D1Database): AppDb {
       const id = crypto.randomUUID();
       await d1
         .prepare(
-          `INSERT INTO "Holding" ("id", "symbol", "name", "quantity", "avgCost", "createdAt", "updatedAt", "deletedAt")
-           VALUES (?, ?, NULL, ?, ?, ?, ?, NULL)
+          `INSERT INTO "Holding" ("id", "symbol", "name", "quantity", "avgCost", "createdAt", "updatedAt")
+           VALUES (?, ?, NULL, ?, ?, ?, ?)
            ON CONFLICT("symbol") DO UPDATE SET
              "quantity" = excluded."quantity",
              "avgCost" = excluded."avgCost",
-             "updatedAt" = excluded."updatedAt",
-             "deletedAt" = NULL`,
+             "updatedAt" = excluded."updatedAt"`,
         )
         .bind(
           id,
@@ -1486,22 +1094,9 @@ export function createD1Db(d1: D1Database): AppDb {
     },
 
     deleteMany: async (args) => {
-      // Soft delete — the row stays for recovery via `restore`.
       const r = await d1
-        .prepare(
-          `UPDATE "Holding" SET "deletedAt" = ? WHERE "symbol" = ? AND "deletedAt" IS NULL`,
-        )
-        .bind(new Date().toISOString(), args.where.symbol)
-        .run();
-      return { count: r.meta.changes ?? 0 };
-    },
-
-    restore: async (args) => {
-      const r = await d1
-        .prepare(
-          `UPDATE "Holding" SET "deletedAt" = NULL, "updatedAt" = ? WHERE "symbol" = ? AND "deletedAt" IS NOT NULL`,
-        )
-        .bind(new Date().toISOString(), args.where.symbol)
+        .prepare(`DELETE FROM "Holding" WHERE "symbol" = ?`)
+        .bind(args.where.symbol)
         .run();
       return { count: r.meta.changes ?? 0 };
     },
@@ -1509,7 +1104,7 @@ export function createD1Db(d1: D1Database): AppDb {
     updateMany: async (args) => {
       const r = await d1
         .prepare(
-          `UPDATE "Holding" SET "name" = ? WHERE "symbol" = ? AND "name" IS NULL AND "deletedAt" IS NULL`,
+          `UPDATE "Holding" SET "name" = ? WHERE "symbol" = ? AND "name" IS NULL`,
         )
         .bind(args.data.name, args.where.symbol)
         .run();
@@ -1587,48 +1182,6 @@ export function createD1Db(d1: D1Database): AppDb {
       return row;
     },
 
-    update: async (args) => {
-      const d = args.data;
-      const sets: string[] = [];
-      const binds: unknown[] = [];
-      if (d.type !== undefined) {
-        sets.push(`"type" = ?`);
-        binds.push(d.type);
-      }
-      if (d.quantity !== undefined) {
-        sets.push(`"quantity" = ?`);
-        binds.push(d.quantity);
-      }
-      if (d.price !== undefined) {
-        sets.push(`"price" = ?`);
-        binds.push(d.price);
-      }
-      if (d.fees !== undefined) {
-        sets.push(`"fees" = ?`);
-        binds.push(d.fees);
-      }
-      if (d.executedAt !== undefined) {
-        sets.push(`"executedAt" = ?`);
-        binds.push(iso(toDate(d.executedAt)));
-      }
-      if (d.note !== undefined) {
-        sets.push(`"note" = ?`);
-        binds.push(d.note);
-      }
-      if (sets.length > 0) {
-        await d1
-          .prepare(`UPDATE "Transaction" SET ${sets.join(", ")} WHERE "id" = ?`)
-          .bind(...binds, args.where.id)
-          .run();
-      }
-      const updated = await d1
-        .prepare(`SELECT * FROM "Transaction" WHERE "id" = ?`)
-        .bind(args.where.id)
-        .first();
-      if (!updated) throw new Error("Transaction not found");
-      return mapTransaction(updated as unknown as RawRow);
-    },
-
     delete: async (args) => {
       const row = await d1
         .prepare(`SELECT * FROM "Transaction" WHERE "id" = ?`)
@@ -1648,47 +1201,6 @@ export function createD1Db(d1: D1Database): AppDb {
         .bind(args.where.symbol)
         .run();
       return { count: r.meta.changes ?? 0 };
-    },
-  };
-
-  const deletedTransaction: AppDb["deletedTransaction"] = {
-    findMany: async () => {
-      const { results } = await d1
-        .prepare(`SELECT * FROM "DeletedTransaction"`)
-        .all();
-      return (results as unknown as RawRow[]).map(mapDeletedTransaction);
-    },
-
-    create: async (args) => {
-      const d = args.data;
-      const row: DeletedTransactionRow = {
-        id: crypto.randomUUID(),
-        symbol: d.symbol,
-        type: d.type,
-        quantity: d.quantity,
-        price: d.price,
-        executedAt: toDate(d.executedAt),
-        externalId: d.externalId ?? null,
-        deletedAt: new Date(),
-      };
-      await d1
-        .prepare(
-          `INSERT INTO "DeletedTransaction"
-             ("id", "symbol", "type", "quantity", "price", "executedAt", "externalId", "deletedAt")
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .bind(
-          row.id,
-          row.symbol,
-          row.type,
-          row.quantity,
-          row.price,
-          iso(row.executedAt),
-          row.externalId,
-          iso(row.deletedAt),
-        )
-        .run();
-      return row;
     },
   };
 
@@ -1725,7 +1237,7 @@ export function createD1Db(d1: D1Database): AppDb {
           crypto.randomUUID(),
           c.date,
           c.marketValue,
-          c.costBasis ?? null,
+          c.costBasis,
           c.totalPL ?? null,
           c.dayPL ?? null,
           c.holdingsCount ?? 0,
@@ -1738,11 +1250,6 @@ export function createD1Db(d1: D1Database): AppDb {
         .first();
       if (!row) throw new Error("PortfolioSnapshot upsert failed");
       return mapPortfolioSnapshot(row as unknown as RawRow);
-    },
-
-    deleteMany: async () => {
-      const r = await d1.prepare(`DELETE FROM "PortfolioSnapshot"`).run();
-      return { count: r.meta.changes ?? 0 };
     },
   };
 
@@ -1981,13 +1488,10 @@ export function createD1Db(d1: D1Database): AppDb {
   return {
     brokerTrade,
     brokerCashFlow,
-    brokerCashFlowHistory,
     brokerPosition,
     brokerCredential,
-    brokerBackfill,
     holding,
     transaction,
-    deletedTransaction,
     portfolioSnapshot,
     priceAlert,
     pushSubscription,
@@ -1995,6 +1499,5 @@ export function createD1Db(d1: D1Database): AppDb {
     exchangeCredential,
     exchangeBalance,
     exchangeSync,
-    syncToken,
   };
 }

@@ -1,30 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  applyTableFilters,
-  compareSortValues,
-  deriveFilterOptions,
-  resolveSortToggle,
-  sortRows,
-  type FilterableColumn,
-  type FilterOption,
-  type SortableColumn,
-  type SortDir,
-  type SortValue,
-  type TableSortState,
-} from "~/app/_components/table-sort";
-import {
-  ArrowDown,
-  ArrowUp,
-  ArrowUpDown,
-  ChevronLeft,
-  ChevronRight,
-  Info,
-  ListFilter,
-  Search,
-  X,
-} from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, Info } from "lucide-react";
 
 /**
  * Small ⓘ that explains a section. Hover/focus shows it on desktop,
@@ -194,15 +171,12 @@ export function StatCard({
   sub,
   tone,
   info,
-  footer,
 }: {
   label: string;
   value: React.ReactNode;
   sub?: React.ReactNode;
   tone?: "pos" | "neg" | "neutral";
   info?: string;
-  /** Optional extra row rendered below `sub` (e.g. a period selector). */
-  footer?: React.ReactNode;
 }) {
   const toneClass =
     tone === "pos"
@@ -224,115 +198,17 @@ export function StatCard({
       {sub != null && sub !== "" && (
         <div className="mt-1 truncate text-sm text-zinc-500">{sub}</div>
       )}
-      {footer}
     </div>
   );
 }
 
 /* ---------------- unified table ---------------- */
 
-export interface DataColumn<T> extends SortableColumn<T> {
+export interface DataColumn<T> {
+  key: string;
   header: React.ReactNode;
   align?: "left" | "center" | "right";
   render: (row: T) => React.ReactNode;
-  /** Text matched by the toolbar search box (case-insensitive substring). */
-  searchValue?: (row: T) => string;
-  /** Categorical value for the toolbar's filter dropdown on this column. */
-  filterValue?: (row: T) => string | null | undefined;
-  /** Label for the filter dropdown; defaults to the header text when it's a string. */
-  filterLabel?: string;
-  /** Explicit filter options; when omitted they are derived from the rows. */
-  filterOptions?: { value: string; label: string }[];
-}
-
-// Pure sorting/filtering primitives live in ./table-sort (a .ts module so
-// vitest can import it under the repo's "jsx": "preserve" config);
-// re-exported here so table consumers keep importing from
-// "~/app/_components/ui".
-export { applyTableFilters, compareSortValues, deriveFilterOptions, resolveSortToggle, sortRows };
-export type {
-  FilterableColumn,
-  FilterOption,
-  SortableColumn,
-  SortDir,
-  SortValue,
-  TableSortState,
-};
-
-const SORT_STORAGE_PREFIX = "holdr.tablesort.";
-
-function loadSortState(storageKey?: string): TableSortState | null {
-  if (!storageKey) return null;
-  try {
-    const raw = window.localStorage.getItem(SORT_STORAGE_PREFIX + storageKey);
-    if (!raw) return null;
-    const p = JSON.parse(raw) as { key?: unknown; dir?: unknown };
-    if (typeof p.key === "string" && (p.dir === 1 || p.dir === -1)) {
-      return { key: p.key, dir: p.dir };
-    }
-  } catch {
-    /* ignore */
-  }
-  return null;
-}
-
-/**
- * Controlled sort state for a DataTable. Returns the active state, a
- * toggle handler for header clicks, and applySort(rows) which stably
- * sorts the FULL row list (call it before pagination). Optionally
- * persists to localStorage via storageKey.
- */
-export function useTableSort<T>(
-  columns: DataColumn<T>[],
-  opts?: { defaultKey?: string; storageKey?: string },
-): {
-  sort: TableSortState | null;
-  toggleSort: (key: string) => void;
-  applySort: (rows: T[]) => T[];
-} {
-  const [state, setState] = useState<TableSortState | null>(() => {
-    const loaded = loadSortState(opts?.storageKey);
-    if (loaded && columns.some((c) => c.key === loaded.key && c.sortValue)) {
-      return loaded;
-    }
-    const def =
-      columns.find((c) => c.key === opts?.defaultKey && c.sortValue) ??
-      columns.find((c) => c.sortValue);
-    if (!def) return null;
-    return { key: def.key, dir: def.sortDescFirst === false ? 1 : -1 };
-  });
-
-  const toggleSort = useCallback(
-    (key: string) => {
-      setState((prev) => {
-        const next = resolveSortToggle(prev, key, columns);
-        if (next && opts?.storageKey) {
-          try {
-            window.localStorage.setItem(
-              SORT_STORAGE_PREFIX + opts.storageKey,
-              JSON.stringify(next),
-            );
-          } catch {
-            /* ignore */
-          }
-        }
-        return next;
-      });
-    },
-    [columns, opts?.storageKey],
-  );
-
-  const applySort = useCallback(
-    (rows: T[]) => {
-      if (!state) return rows;
-      const col = columns.find((c) => c.key === state.key);
-      if (!col?.sortValue) return rows;
-      return sortRows(rows, col.sortValue, state.dir);
-    },
-    [columns, state],
-  );
-
-  return { sort: state, toggleSort, applySort };
 }
 
 /**
@@ -347,8 +223,6 @@ export function DataTable<T>({
   minWidth,
   emptyText,
   footer,
-  sort,
-  onSortChange,
 }: {
   columns: DataColumn<T>[];
   rows: T[];
@@ -356,41 +230,9 @@ export function DataTable<T>({
   minWidth?: string;
   emptyText?: string;
   footer?: React.ReactNode;
-  /**
-   * Controlled sort state (from useTableSort). When onSortChange is given,
-   * columns with sortValue render as tappable headers with direction arrows.
-   * The caller sorts the FULL row list (before pagination) via applySort.
-   */
-  sort?: TableSortState | null;
-  onSortChange?: (key: string) => void;
 }) {
   const alignCls = (a?: DataColumn<T>["align"]) =>
     a === "right" ? "text-right" : a === "center" ? "text-center" : "text-left";
-  const sortDirFor = (c: DataColumn<T>): SortDir | null =>
-    c.sortValue && onSortChange && sort && sort.key === c.key ? sort.dir : null;
-  const renderHeader = (c: DataColumn<T>) => {
-    if (!c.sortValue || !onSortChange) return c.header;
-    const activeDir = sortDirFor(c);
-    return (
-      <button
-        type="button"
-        onClick={() => onSortChange(c.key)}
-        aria-label={`Sort by ${typeof c.header === "string" ? c.header : c.key}`}
-        className={`inline-flex min-h-[44px] cursor-pointer items-center gap-1 uppercase hover:text-zinc-800 dark:hover:text-zinc-200 ${
-          activeDir != null ? "text-zinc-800 dark:text-zinc-100" : "text-zinc-500"
-        } ${c.align === "right" ? "flex-row-reverse" : ""}`}
-      >
-        {c.header}
-        {activeDir == null ? (
-          <ArrowUpDown size={12} aria-hidden className="opacity-40" />
-        ) : activeDir === 1 ? (
-          <ArrowUp size={12} aria-hidden />
-        ) : (
-          <ArrowDown size={12} aria-hidden />
-        )}
-      </button>
-    );
-  };
   return (
     <div>
       <div className="overflow-x-auto">
@@ -400,24 +242,14 @@ export function DataTable<T>({
         >
           <thead>
             <tr className="border-b border-zinc-200 dark:border-zinc-800 text-xs uppercase tracking-wider text-zinc-500">
-              {columns.map((c) => {
-                const d = sortDirFor(c);
-                return (
-                  <th
-                    key={c.key}
-                    className={`px-3 py-1 font-medium ${alignCls(c.align)}`}
-                    aria-sort={
-                      d == null
-                        ? undefined
-                        : d === 1
-                          ? "ascending"
-                          : "descending"
-                    }
-                  >
-                    {renderHeader(c)}
-                  </th>
-                );
-              })}
+              {columns.map((c) => (
+                <th
+                  key={c.key}
+                  className={`px-3 py-2 font-medium ${alignCls(c.align)}`}
+                >
+                  {c.header}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -445,254 +277,6 @@ export function DataTable<T>({
         <p className="px-3 py-4 text-sm text-zinc-500">{emptyText}</p>
       )}
       {footer}
-    </div>
-  );
-}
-
-/* ---------------- search + column filters ---------------- */
-
-const TOOLS_STORAGE_PREFIX = "holdr.tabletools.";
-
-interface TableToolsState {
-  search: string;
-  filters: Record<string, string>;
-}
-
-function loadToolsState(storageKey?: string): TableToolsState | null {
-  if (!storageKey || typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(TOOLS_STORAGE_PREFIX + storageKey);
-    if (!raw) return null;
-    const p = JSON.parse(raw) as {
-      search?: unknown;
-      filters?: unknown;
-    };
-    const filters: Record<string, string> = {};
-    if (p.filters && typeof p.filters === "object") {
-      for (const [k, v] of Object.entries(p.filters as Record<string, unknown>)) {
-        if (typeof v === "string") filters[k] = v;
-      }
-    }
-    return {
-      search: typeof p.search === "string" ? p.search : "",
-      filters,
-    };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Search + per-column filter state for a DataTable. `apply(rows, columns)`
- * returns the filtered rows — compose with useTableSort before pagination:
- * `usePager(sort.applySort(tools.apply(rows, columns)), 10)`.
- * Persists to localStorage via storageKey.
- */
-export function useTableTools<T>(opts?: { storageKey?: string }): {
-  search: string;
-  setSearch: (v: string) => void;
-  filters: Record<string, string>;
-  setFilter: (key: string, value: string) => void;
-  clearAll: () => void;
-  hasActive: boolean;
-  activeFilterCount: number;
-  apply: (rows: T[], columns: FilterableColumn<T>[]) => T[];
-} {
-  const [state, setState] = useState<TableToolsState>(
-    () => loadToolsState(opts?.storageKey) ?? { search: "", filters: {} },
-  );
-
-  const persist = useCallback(
-    (next: TableToolsState) => {
-      if (!opts?.storageKey) return;
-      try {
-        window.localStorage.setItem(
-          TOOLS_STORAGE_PREFIX + opts.storageKey,
-          JSON.stringify(next),
-        );
-      } catch {
-        /* ignore */
-      }
-    },
-    [opts?.storageKey],
-  );
-
-  const setSearch = useCallback(
-    (v: string) => {
-      setState((prev) => {
-        const next = { ...prev, search: v };
-        persist(next);
-        return next;
-      });
-    },
-    [persist],
-  );
-
-  const setFilter = useCallback(
-    (key: string, value: string) => {
-      setState((prev) => {
-        const filters = { ...prev.filters };
-        if (value) {
-          filters[key] = value;
-        } else {
-          delete filters[key];
-        }
-        const next = { ...prev, filters };
-        persist(next);
-        return next;
-      });
-    },
-    [persist],
-  );
-
-  const clearAll = useCallback(() => {
-    const next = { search: "", filters: {} };
-    persist(next);
-    setState(next);
-  }, [persist]);
-
-  const apply = useCallback(
-    (rows: T[], columns: FilterableColumn<T>[]) =>
-      applyTableFilters(rows, columns, state.search, state.filters),
-    [state.search, state.filters],
-  );
-
-  const activeFilterCount = Object.values(state.filters).filter(
-    (v) => v !== "",
-  ).length;
-  const hasActive = state.search.trim() !== "" || activeFilterCount > 0;
-
-  return {
-    search: state.search,
-    setSearch,
-    filters: state.filters,
-    setFilter,
-    clearAll,
-    hasActive,
-    activeFilterCount,
-    apply,
-  };
-}
-
-export type TableTools<T> = ReturnType<typeof useTableTools<T>>;
-
-const filterLabelFor = <T,>(c: DataColumn<T>): string =>
-  c.filterLabel ??
-  (typeof c.header === "string" ? c.header : c.key);
-
-/**
- * Search box + per-column filter dropdowns + result count, rendered above a
- * DataTable. Filter options are derived from the FULL row list. `onChange`
- * fires on any search/filter change (wire it to pager.reset()).
- */
-export function TableToolbar<T>({
-  tools,
-  columns,
-  rows,
-  searchPlaceholder = "Search…",
-  onChange,
-}: {
-  tools: TableTools<T>;
-  columns: DataColumn<T>[];
-  /** Full unfiltered rows — used to derive filter options and counts. */
-  rows: T[];
-  searchPlaceholder?: string;
-  onChange?: () => void;
-}) {
-  const options = useMemo(
-    () => deriveFilterOptions(rows, columns),
-    [rows, columns],
-  );
-  const filterCols = useMemo(
-    () =>
-      columns.filter(
-        (c) => c.filterValue != null || c.filterOptions != null,
-      ),
-    [columns],
-  );
-  const matchCount = useMemo(
-    () => tools.apply(rows, columns).length,
-    [tools, rows, columns],
-  );
-
-  const setSearch = (v: string) => {
-    tools.setSearch(v);
-    onChange?.();
-  };
-  const setFilter = (key: string, v: string) => {
-    tools.setFilter(key, v);
-    onChange?.();
-  };
-  const clear = () => {
-    tools.clearAll();
-    onChange?.();
-  };
-
-  if (filterCols.length === 0 && !searchPlaceholder) return null;
-
-  const inputCls =
-    "w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-zinc-200 dark:bg-zinc-800 py-1.5 pl-8 pr-8 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-500 outline-none focus:border-zinc-500";
-  const selectCls =
-    "min-h-[36px] max-w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-zinc-200 dark:bg-zinc-800 px-2 py-1.5 text-xs font-medium text-zinc-700 dark:text-zinc-300 outline-none focus:border-zinc-500";
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <div className="relative min-w-0 flex-1 basis-44">
-        <Search
-          size={14}
-          className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500"
-        />
-        <input
-          value={tools.search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder={searchPlaceholder}
-          aria-label={searchPlaceholder}
-          className={inputCls}
-        />
-        {tools.search !== "" && (
-          <button
-            type="button"
-            onClick={() => setSearch("")}
-            aria-label="Clear search"
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-zinc-500 hover:text-zinc-200"
-          >
-            <X size={14} />
-          </button>
-        )}
-      </div>
-      {filterCols.map((c) => (
-        <label key={c.key} className="inline-flex min-w-0 items-center gap-1.5">
-          <ListFilter size={13} className="shrink-0 text-zinc-500" aria-hidden />
-          <select
-            value={tools.filters[c.key] ?? ""}
-            onChange={(e) => setFilter(c.key, e.target.value)}
-            aria-label={`Filter by ${filterLabelFor(c)}`}
-            className={selectCls}
-          >
-            <option value="">All {filterLabelFor(c)}</option>
-            {(options[c.key] ?? []).map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label} ({o.count})
-              </option>
-            ))}
-          </select>
-        </label>
-      ))}
-      {tools.hasActive && (
-        <span className="inline-flex items-center gap-2 text-xs text-zinc-500">
-          <span className="tabular-nums">
-            {matchCount} of {rows.length}
-          </span>
-          <button
-            type="button"
-            onClick={clear}
-            className="inline-flex items-center gap-1 rounded-lg border border-zinc-300 dark:border-zinc-700 px-2 py-1.5 font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-700"
-          >
-            <X size={12} />
-            Clear
-          </button>
-        </span>
-      )}
     </div>
   );
 }

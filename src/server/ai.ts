@@ -40,8 +40,7 @@ export interface InsightInput {
   totals: {
     marketValue: number;
     dayPL: number | null;
-    /** Null when any position lacks a recorded cost — never $0-filled. */
-    totalPL: number | null;
+    totalPL: number;
     totalPLPct: number | null;
   };
   recentTrades: {
@@ -104,7 +103,7 @@ function buildPrompt(input: InsightInput, locale: AiLocale): string {
   return (
     `Portfolio: $${t.marketValue.toFixed(0)} total, ` +
     `today ${t.dayPL != null ? `$${t.dayPL.toFixed(0)}` : "n/a"}, ` +
-    `all-time P/L ${t.totalPL != null ? `$${t.totalPL.toFixed(0)}` : "n/a"}` +
+    `all-time P/L $${t.totalPL.toFixed(0)}` +
     (t.totalPLPct != null ? ` (${t.totalPLPct.toFixed(1)}%)` : "") +
     `.\n\nPositions:\n${pos}\n\nRecent trades:\n${trades}\n\n` +
     BULLET_TAIL[locale]

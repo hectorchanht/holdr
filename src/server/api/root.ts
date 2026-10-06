@@ -1,10 +1,7 @@
 import { authRouter } from "~/server/api/routers/auth";
 import { ibkrRouter } from "~/server/api/routers/ibkr";
 import { exchangesRouter } from "~/server/api/routers/exchanges";
-import { futuRouter } from "~/server/api/routers/futu";
 import { questradeRouter } from "~/server/api/routers/questrade";
-import { longbridgeRouter } from "~/server/api/routers/longbridge";
-import { webullRouter } from "~/server/api/routers/webull";
 import { portfolioRouter } from "~/server/api/routers/portfolio";
 import { aiRouter } from "~/server/api/routers/ai";
 import { alertsRouter } from "~/server/api/routers/alerts";
@@ -19,10 +16,7 @@ import { createCallerFactory, createTRPCRouter } from "~/server/api/trpc";
 export const appRouter = createTRPCRouter({
   auth: authRouter,
   exchanges: exchangesRouter,
-  futu: futuRouter,
   questrade: questradeRouter,
-  longbridge: longbridgeRouter,
-  webull: webullRouter,
   ibkr: ibkrRouter,
   portfolio: portfolioRouter,
   ai: aiRouter,

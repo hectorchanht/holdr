@@ -20,23 +20,14 @@ import {
 
 import { api, type RouterOutputs } from "~/trpc/react";
 import { useCurrency } from "~/app/_components/currency";
-import {
-  DataTable,
-  Pagination,
-  TableToolbar,
-  usePager,
-  useTableSort,
-  useTableTools,
-  type DataColumn,
-} from "~/app/_components/ui";
-import { syncBinanceViaWs, syncBinanceMyTrades, binanceTradePairs } from "~/app/_components/binance-ws";
+import { syncBinanceViaWs } from "~/app/_components/binance-ws";
 import {
   Code,
   SetupGuide,
   type GuideStep,
 } from "~/app/_components/setup-guide";
 
-type ExchangeName = "coinbase" | "binance" | "kraken";
+type ExchangeName = "coinbase" | "binance";
 type SyncResult = RouterOutputs["exchanges"]["sync"];
 type Status = RouterOutputs["exchanges"]["status"]["exchanges"][ExchangeName];
 
@@ -47,8 +38,6 @@ export interface ExchangePositionLike {
   markPrice: number | null;
   costBasisPrice?: number | null;
   label?: string | null;
-  /** Native currency of markPrice — always USD (balances price in priceUsd). */
-  currency?: string | null;
 }
 
 const card = "rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 sm:p-5";
@@ -67,11 +56,6 @@ const EXCHANGE_META: Record<
     accent: "text-amber-400",
     snapshotKey: "holdr.exchange.binance.snapshot",
   },
-  kraken: {
-    title: "Kraken",
-    accent: "text-purple-400",
-    snapshotKey: "holdr.exchange.kraken.snapshot",
-  },
 };
 
 const AUTO_SYNC_AFTER_MS = 1 * 3600 * 1000;
@@ -87,7 +71,7 @@ const EXCHANGE_IDS = Object.keys(EXCHANGE_META) as ExchangeName[];
 function loadSelected(): ExchangeName | null {
   try {
     const raw = localStorage.getItem(SELECTED_KEY);
-    return raw === "coinbase" || raw === "binance" || raw === "kraken" ? raw : null;
+    return raw === "coinbase" || raw === "binance" ? raw : null;
   } catch {
     return null;
   }
@@ -274,56 +258,6 @@ const BINANCE_STEPS: GuideStep[] = [
   },
 ];
 
-const KRAKEN_STEPS: GuideStep[] = [
-  {
-    icon: LogIn,
-    title: "Log in to Kraken",
-    body: (
-      <>
-        Log in at <Code>kraken.com</Code>.
-      </>
-    ),
-  },
-  {
-    icon: Settings,
-    title: "Open API settings",
-    body: (
-      <>
-        Click your profile icon → <Code>Settings</Code> → the <Code>API</Code>{" "}
-        tab.
-      </>
-    ),
-  },
-  {
-    icon: Plus,
-    title: "Generate a new API key",
-    body: (
-      <>
-        Click <Code>Generate New Key</Code> and complete 2-step verification.
-      </>
-    ),
-  },
-  {
-    icon: ShieldCheck,
-    title: "Query Funds only",
-    body: (
-      <>
-        Check only <Code>Query Funds</Code>. Leave everything else OFF:{" "}
-        <Code>Query open orders &amp; trades</Code>,{" "}
-        <Code>Create &amp; modify orders</Code>, <Code>Cancel &amp; close orders</Code>,{" "}
-        <Code>Deposit</Code>, <Code>Withdraw</Code>.
-      </>
-    ),
-    warn: "Never enable trading, deposit or withdrawal permissions — Holdr only reads balances.",
-  },
-  {
-    icon: Copy,
-    title: "Copy key + secret",
-    body: <>Copy the API key and private key (secret) into the fields below.</>,
-    warn: "The private key is shown only once — copy it now or you'll need a new key.",
-  },
-];
-
 /** Gear menu for the connected card (mirrors the IBKR card). */
 function GearMenu({
   items,
@@ -371,105 +305,17 @@ function GearMenu({
   );
 }
 
-type BalRow = SyncResult["items"][number];
-
 function BalancesTable({ data }: { data: SyncResult }) {
   const { fmt } = useCurrency();
   const money = (cents: number | null) =>
     cents == null ? "—" : fmt(cents / 100);
-  // Only show the cost column when at least one asset has a real basis —
-  // Coinbase/Kraken never compute one, so their tables stay unchanged.
-  const showCost = data.items.some((r) => r.avgCostUsd != null);
-
-  const columns: DataColumn<BalRow>[] = [
-    {
-      key: "asset",
-      header: "Asset",
-      sortValue: (r) => r.asset,
-      sortDescFirst: false,
-      searchValue: (r) => r.asset,
-      render: (r) => <span className="font-semibold">{r.asset}</span>,
-    },
-    {
-      key: "value",
-      header: "Value",
-      align: "right",
-      sortValue: (r) => r.valueCents,
-      render: (r) => <span className="tabular-nums">{money(r.valueCents)}</span>,
-    },
-    {
-      key: "qty",
-      header: "Qty",
-      align: "right",
-      sortValue: (r) => {
-        const n = Number(r.quantity);
-        return Number.isNaN(n) ? null : n;
-      },
-      render: (r) => (
-        <span className="tabular-nums text-zinc-300" title="Native quantity (exact)">
-          {r.quantity}
-        </span>
-      ),
-    },
-    {
-      key: "price",
-      header: "Price",
-      align: "right",
-      sortValue: (r) =>
-        r.priceUsd == null || Number.isNaN(Number(r.priceUsd))
-          ? null
-          : Number(r.priceUsd),
-      render: (r) => (
-        <span className="tabular-nums text-zinc-400">
-          {r.priceUsd == null ? "—" : money(Math.round(Number(r.priceUsd) * 100))}
-        </span>
-      ),
-    },
-    ...(showCost
-      ? [
-          {
-            key: "avgcost",
-            header: "Avg cost",
-            align: "right" as const,
-            sortValue: (r: BalRow) =>
-              r.avgCostUsd == null || Number.isNaN(Number(r.avgCostUsd))
-                ? null
-                : Number(r.avgCostUsd),
-            render: (r: BalRow) => (
-              <span
-                className="tabular-nums text-zinc-400"
-                title={
-                  r.avgCostUsd == null
-                    ? "No trade history — cost unknown, never estimated"
-                    : r.costTradeCount != null && r.costTradeCount > 0
-                      ? `Average cost from ${r.costTradeCount} real Binance spot fills`
-                      : "USD-pegged — cost is $1 by definition"
-                }
-              >
-                {r.avgCostUsd == null
-                  ? "—"
-                  : money(Math.round(Number(r.avgCostUsd) * 100))}
-              </span>
-            ),
-          },
-        ]
-      : []),
-  ];
-
-  const tools = useTableTools<BalRow>({ storageKey: "ex-bal-tools" });
-  const balSort = useTableSort(columns, {
-    defaultKey: "value",
-    storageKey: "ex-balances",
-  });
-  const pager = usePager(
-    balSort.applySort(tools.apply(data.items, columns)),
-    10,
+  const rows = [...data.items].sort(
+    (a, b) => (b.valueCents ?? -1) - (a.valueCents ?? -1),
   );
-  const handleSortChange = (key: string) => {
-    balSort.toggleSort(key);
-    pager.reset();
-  };
-  const handleToolsChange = () => pager.reset();
+  // Long asset lists collapse: show the top 8, expand for the rest.
+  const [showAll, setShowAll] = useState(false);
+  const MAX_VISIBLE = 8;
+  const visible = showAll ? rows : rows.slice(0, MAX_VISIBLE);
   return (
     <div className="mt-3">
       <div className="flex items-baseline justify-between">
@@ -487,42 +333,45 @@ function BalancesTable({ data }: { data: SyncResult }) {
           No price for {data.unpriced.join(", ")} — quantities shown, excluded from total.
         </p>
       )}
-      {data.costTrades > 0 && (
-        <p className="mt-1 text-xs text-zinc-500">
-          Avg cost from {data.costTrades} real Binance spot fills
-          {data.costAssets > 0 ? ` across ${data.costAssets} assets` : ""} — no estimates.
-        </p>
-      )}
-      <div className="mt-3 overflow-hidden rounded-xl border border-zinc-800">
-        <div className="border-b border-zinc-800/60 px-3 py-2">
-          <TableToolbar
-            tools={tools}
-            columns={columns}
-            rows={data.items}
-            searchPlaceholder="Search asset…"
-            onChange={handleToolsChange}
-          />
-        </div>
-        <DataTable
-          columns={columns}
-          rows={pager.rows}
-          keyOf={(r) => r.asset}
-          sort={balSort.sort}
-          onSortChange={handleSortChange}
-          emptyText={
-            tools.hasActive
-              ? "No assets match the current search."
-              : "No balances."
-          }
-          footer={
-            <Pagination
-              page={pager.page}
-              pageCount={pager.pageCount}
-              onPage={pager.setPage}
-            />
-          }
-        />
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs uppercase tracking-wide text-zinc-500">
+              <th className="pb-2 pr-3">Asset</th>
+              <th className="pb-2 pr-3 text-right">Qty</th>
+              <th className="pb-2 pr-3 text-right">Price</th>
+              <th className="pb-2 text-right">Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((r) => (
+              <tr key={r.asset} className="border-t border-zinc-800/60 text-zinc-200">
+                <td className="py-2 pr-3 font-semibold">{r.asset}</td>
+                <td className="py-2 pr-3 text-right tabular-nums text-zinc-300" title="Native quantity (exact)">
+                  {r.quantity}
+                </td>
+                <td className="py-2 pr-3 text-right tabular-nums text-zinc-400">
+                  {r.priceUsd == null ? "—" : money(Math.round(Number(r.priceUsd) * 100))}
+                </td>
+                <td className="py-2 text-right tabular-nums">{money(r.valueCents)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
+      {rows.length > MAX_VISIBLE && (
+        <button
+          type="button"
+          onClick={() => setShowAll((s) => !s)}
+          className="mt-2 flex w-full items-center justify-center gap-1 rounded-lg border border-zinc-800/60 px-3 py-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-200"
+        >
+          {showAll ? "Show fewer" : `Show all ${rows.length} assets`}
+          <ChevronDown
+            size={13}
+            className={`transition-transform ${showAll ? "rotate-180" : ""}`}
+          />
+        </button>
+      )}
       <p className="mt-2 text-[11px] text-zinc-600">
         Quantities are native (e.g. BTC), values in USD at each asset&apos;s spot
         price at sync time.
@@ -556,8 +405,6 @@ function ExchangeCard({
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
   const [error, setError] = useState<string | null>(null);
-  // Progress note for the second Binance phase (trade-history fetch).
-  const [syncNote, setSyncNote] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<{ at: string; data: SyncResult } | null>(null);
   const [browserCreds, setBrowserCreds] = useState<BrowserCreds | null>(null);
   const [browserBusy, setBrowserBusy] = useState(false);
@@ -632,10 +479,9 @@ function ExchangeCard({
     tickersJson: unknown,
     key: string,
     secret: string,
-    tradesJson?: Array<{ symbol: string; trades: unknown[] }>,
   ) => {
     directSync.mutate(
-      { accountJson, tickersJson, tradesJson, label: "browser" },
+      { accountJson, tickersJson, label: "browser" },
       {
         onSuccess: (d) => {
           try {
@@ -702,35 +548,7 @@ function ExchangeCard({
         fail(result.error);
         return;
       }
-      // Phase 2 (best-effort): real spot trade history for cost basis.
-      // Balances stand alone — if this fails, cost just stays unknown
-      // (honest "no cost", never a fabricated number).
-      let tradesJson: Array<{ symbol: string; trades: unknown[] }> | undefined;
-      try {
-        const pairs = binanceTradePairs(result.accountJson, result.tickersJson);
-        if (pairs.length > 0) {
-          const tradesRes = await syncBinanceMyTrades({
-            apiKey: key,
-            sign: (payload) => binanceBrowserSignature(secret, payload),
-            symbols: pairs,
-            onProgress: (doneN, totalN, symbol) =>
-              setSyncNote(`Fetching trade history… ${doneN}/${totalN} (${symbol})`),
-          });
-          if (tradesRes.ok) {
-            tradesJson = tradesRes.pairs.map((p) => ({
-              symbol: p.symbol,
-              trades: p.trades,
-            }));
-          } else {
-            console.warn(`[binance] trade history fetch failed: ${tradesRes.error}`);
-          }
-        }
-      } catch (e) {
-        console.warn("[binance] trade history fetch failed:", e);
-      } finally {
-        setSyncNote(null);
-      }
-      submitBinanceDirect(result.accountJson, result.tickersJson, key, secret, tradesJson);
+      submitBinanceDirect(result.accountJson, result.tickersJson, key, secret);
     } finally {
       setBrowserBusy(false);
     }
@@ -888,22 +706,13 @@ function ExchangeCard({
         priceSource: b.priceSource,
         priceAt: b.priceAt,
         valueCents: b.valueCents,
-        avgCostUsd: b.avgCostUsd,
-        costTradeCount: b.costTradeCount,
       }));
     onPositions?.(
       (items ?? []).map((i) => ({
         symbol: i.asset,
         quantity: Number(i.quantity),
         markPrice: i.priceUsd == null ? null : Number(i.priceUsd),
-        // Real average cost from the account's own trade history (Binance);
-        // null = unknown — the dashboard never fabricates it.
-        costBasisPrice:
-          i.avgCostUsd == null || Number.isNaN(Number(i.avgCostUsd))
-            ? null
-            : Number(i.avgCostUsd),
         label: meta.title.toUpperCase(),
-        currency: "USD",
       })),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1003,13 +812,6 @@ function ExchangeCard({
         </p>
       )}
 
-      {syncNote && (
-        <p className="mt-3 text-sm text-zinc-400">
-          <span className="mr-2 inline-block h-3 w-3 animate-spin rounded-full border-2 border-zinc-600 border-t-emerald-400 align-[-2px]" />
-          {syncNote}
-        </p>
-      )}
-
       {!(isBinance ? browserCreds : configured) && !data && (
         <>
           <p className="mt-1 text-sm text-zinc-400">
@@ -1017,26 +819,16 @@ function ExchangeCard({
           </p>
           <SetupGuide
             id={exchange}
-            steps={
-              exchange === "coinbase"
-                ? COINBASE_STEPS
-                : exchange === "binance"
-                  ? BINANCE_STEPS
-                  : KRAKEN_STEPS
-            }
+            steps={exchange === "coinbase" ? COINBASE_STEPS : BINANCE_STEPS}
             guideUrl={
               exchange === "coinbase"
                 ? "https://help.coinbase.com/en/exchange/managing-my-account/how-to-create-an-api-key"
-                : exchange === "binance"
-                  ? "https://www.binance.com/en-AU/support/faq/detail/360002502072"
-                  : "https://support.kraken.com/articles/generating-an-api-key"
+                : "https://www.binance.com/en-AU/support/faq/detail/360002502072"
             }
             guideLabel={
               exchange === "coinbase"
                 ? "Coinbase help: creating an API key"
-                : exchange === "binance"
-                  ? "Binance FAQ: creating API keys"
-                  : "Kraken support: generating an API key"
+                : "Binance FAQ: creating API keys"
             }
           />
           <div className="mt-4 space-y-3">
@@ -1163,7 +955,7 @@ export function ExchangeCards({
   // Positions are kept per exchange so switching platforms never loses data.
   const [positionsByExchange, setPositionsByExchange] = useState<
     Record<ExchangeName, ExchangePositionLike[]>
-  >({ coinbase: [], binance: [], kraken: [] });
+  >({ coinbase: [], binance: [] });
   // Always start on the first option (avoids SSR hydration mismatch); the
   // persisted / first-connected default is applied in the effect below.
   const [selected, setSelected] = useState<ExchangeName>("coinbase");
@@ -1225,7 +1017,6 @@ export function ExchangeCards({
   const connected: Record<ExchangeName, boolean> = {
     coinbase: !!statusQ.data?.exchanges.coinbase?.configured,
     binance: !!statusQ.data?.exchanges.binance?.configured || binanceBrowser,
-    kraken: !!statusQ.data?.exchanges.kraken?.configured,
   };
 
   const setPositionsFor =
@@ -1238,7 +1029,6 @@ export function ExchangeCards({
     onPositions?.([
       ...positionsByExchange.coinbase,
       ...positionsByExchange.binance,
-      ...positionsByExchange.kraken,
     ]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [positionsByExchange]);

@@ -7,7 +7,6 @@ import {
   getFxRates,
   toUsd,
   inferCurrency,
-  canonicalSymbol,
   type Quote,
 } from "~/server/market";
 import { createTRPCRouter, protectedProcedure, publicProcedure } from "~/server/api/trpc";
@@ -29,13 +28,10 @@ import {
   type PriceBar,
 } from "~/server/performance";
 import { getPriceHistory } from "~/server/price-history";
-import { buildByPlatform, type PlatformTotal } from "~/server/platform-totals";
-import { countBuyStreak, maxDrawdown } from "~/server/hands";
 import { computeFlair } from "~/server/wsb";
 import { generateInsights } from "~/server/ai";
 import {
   importIbkrTrades as mergeIbkrTrades,
-  curveTradeLegs,
   recomputeHolding,
 } from "~/server/ibkr-import";
 import { type AppDb } from "~/server/db";
@@ -77,53 +73,6 @@ const summaryInput = z.object({
 });
 
 const DAY_MS = 86_400_000;
-
-/**
- * Record a tombstone for a transaction BEFORE it is deleted. IBKR auto-sync
- * re-imports any trade whose externalId is missing from the log — without
- * the tombstone the user's delete is silently undone ("restored") on the
- * next sync. Idempotent: re-deleting an already-tombstoned row is a no-op.
- */
-async function tombstoneTransaction(
-  db: AppDb,
-  t: {
-    symbol: string;
-    type: string;
-    quantity: number;
-    price: number;
-    executedAt: Date | string;
-    externalId: string | null;
-  },
-) {
-  const stones = await db.deletedTransaction.findMany();
-  if (t.externalId) {
-    if (stones.some((s) => s.externalId === t.externalId)) return;
-  } else {
-    const day = new Date(t.executedAt).toISOString().slice(0, 10);
-    if (
-      stones.some(
-        (s) =>
-          s.externalId == null &&
-          s.symbol === t.symbol &&
-          s.type === t.type &&
-          s.quantity === t.quantity &&
-          s.price === t.price &&
-          new Date(s.executedAt).toISOString().slice(0, 10) === day,
-      )
-    )
-      return;
-  }
-  await db.deletedTransaction.create({
-    data: {
-      symbol: t.symbol,
-      type: t.type,
-      quantity: t.quantity,
-      price: t.price,
-      executedAt: t.executedAt,
-      externalId: t.externalId,
-    },
-  });
-}
 
 /**
  * Trade-log cash flows in a single currency (USD). Trade prices are stored
@@ -180,23 +129,12 @@ export interface HoldingRow {
 export interface Summary {
   rows: HoldingRow[];
   totals: {
-    /**
-     * Null when any position lacks a recorded cost. Unknown cost is never
-     * treated as $0 — doing so would parade the position's full market
-     * value as profit.
-     */
-    costBasis: number | null;
+    costBasis: number;
     marketValue: number;
     dayPL: number | null;
-    /**
-     * Current value minus total cost. Null when cost is unknown — we never
-     * invent a $0 cost, so a platform like Binance without synced trade
-     * history honestly shows no P/L instead of its full value as profit.
-     */
+    /** Null when broker positions lack cost basis — can't be computed honestly. */
     totalPL: number | null;
     totalPLPct: number | null;
-    /** Per-platform snapshot: Manual + each broker/exchange label. */
-    byPlatform: PlatformTotal[];
     holdingsCount: number;
     pricedCount: number;
     brokerCount: number;
@@ -205,40 +143,19 @@ export interface Summary {
   };
 }
 
-/**
- * Map a summary row to its curve-leg source key (lowercase). Must match the
- * source values produced by curveTradeLegs ("ibkr", "manual") so the live
- * side and the history side of a performance comparison cover the same
- * universe.
- */
-function legSourceOf(r: HoldingRow): string {
-  return r.source === "manual" ? "manual" : (r.brokerLabel ?? "IBKR").toLowerCase();
-}
-
 async function buildSummary(
   ctx: { db: AppDb },
   brokerPositions: z.infer<typeof brokerPositionInput>[],
 ): Promise<Summary> {
   const holdings = await ctx.db.holding.findMany({ orderBy: { symbol: "asc" } });
-  // Canonicalized: IBKR reports "700" where a manual entry says "0700.HK".
-  const manualSymbols = new Set(holdings.map((h) => canonicalSymbol(h.symbol)));
+  const manualSymbols = new Set(holdings.map((h) => h.symbol));
   // The manual log wins on overlap — the same symbol must never be
   // double-counted in both the manual portfolio and the broker snapshot.
-  const broker = brokerPositions.filter(
-    (b) => !manualSymbols.has(canonicalSymbol(b.symbol)),
-  );
+  const broker = brokerPositions.filter((b) => !manualSymbols.has(b.symbol));
 
-  // Crypto-exchange positions are NEVER priced by the stock quote feed: a
-  // delisted Binance token like "SLP" would otherwise pick up the Yahoo price
-  // of Simulations Plus (the US stock sharing its ticker), inventing millions
-  // in phantom portfolio value. They use the exchange's own markPrice; without
-  // one they honestly show as no-price instead of a stranger's stock price.
-  const CRYPTO_LABELS = new Set(["BINANCE", "COINBASE", "KRAKEN"]);
   const quotes = await getQuotes([
     ...holdings.map((h) => h.symbol),
-    ...broker
-      .filter((b) => !CRYPTO_LABELS.has((b.label ?? "").toUpperCase()))
-      .map((b) => b.symbol),
+    ...broker.map((b) => b.symbol),
   ]);
   const bySymbol = new Map<string, Quote>(quotes.map((q) => [q.symbol, q]));
   const fx = await getFxRates();
@@ -286,9 +203,8 @@ async function buildSummary(
   for (const b of broker) {
     const q = bySymbol.get(b.symbol);
     const currency = b.currency ?? inferCurrency(b.symbol);
-    // Broker's own mark price first (the value the user sees in IBKR) —
-    // Yahoo is the fallback only when the broker sent no price.
-    const price = b.markPrice ?? q?.price ?? null;
+    // Live quote when available, otherwise IBKR's end-of-day mark price.
+    const price = q?.price ?? b.markPrice;
     const marketValueNative = price != null ? b.quantity * price : null;
     const marketValue =
       marketValueNative != null ? toUsd(marketValueNative, currency, fx) : null;
@@ -304,9 +220,7 @@ async function buildSummary(
     const totalPL =
       marketValue != null && costBasis != null ? marketValue - costBasis : null;
     rows.push({
-      // Label in the id: the same symbol can live on two brokers
-      // (e.g. BTC on Binance + Coinbase) — bare-symbol ids would collide.
-      id: `broker:${(b.label ?? "IBKR").toUpperCase()}:${b.symbol}`,
+      id: `broker:${b.symbol}`,
       symbol: b.symbol,
       currency,
       name: q?.name ?? null,
@@ -327,23 +241,19 @@ async function buildSummary(
   }
 
   const marketValue = rows.reduce((s, r) => s + (r.marketValue ?? 0), 0);
-  const knownCost = rows.reduce((s, r) => s + (r.costBasis ?? 0), 0);
-  // Unknown cost is never treated as $0: if any position lacks a recorded
-  // cost basis, the portfolio totals honestly report unknown instead of
-  // parading the missing cost's market value as profit.
-  const hasUnknownCost = rows.some((r) => r.costBasis == null);
-  const costBasis = hasUnknownCost ? null : knownCost;
+  const costBasis = rows.reduce((s, r) => s + (r.costBasis ?? 0), 0);
   const dayPLValues = rows
     .map((r) => r.dayPL)
     .filter((v): v is number => v != null);
   const brokerMissingBasis = rows.filter(
     (r) => r.source === "broker" && r.marketValue != null && r.costBasis == null,
   ).length;
-  // Total P/L is value minus cost — but only when every position has a
-  // recorded cost. A missing cost is unknown, never $0: counting it as $0
-  // would show the position's full market value as profit (the old Binance
-  // bug: +$20,908 of phantom P/L with no cost data behind it).
-  const totalPL = costBasis == null ? null : marketValue - costBasis;
+  // Without every position's cost basis, a total P/L number would be a lie —
+  // show it only when it's complete (manual-only portfolios are unaffected).
+  const totalPL =
+    brokerMissingBasis > 0
+      ? null
+      : rows.reduce((s, r) => s + (r.marketValue ?? 0), 0) - costBasis;
 
   for (const r of rows) {
     r.weightPct =
@@ -360,10 +270,7 @@ async function buildSummary(
       dayPL: dayPLValues.length > 0 ? dayPLValues.reduce((a, b) => a + b, 0) : null,
       totalPL,
       totalPLPct:
-        costBasis != null && costBasis > 0 && totalPL != null
-          ? (totalPL / costBasis) * 100
-          : null,
-      byPlatform: buildByPlatform(rows),
+        totalPL != null && costBasis > 0 ? (totalPL / costBasis) * 100 : null,
       holdingsCount: rows.length,
       pricedCount: rows.filter((r) => r.marketValue != null).length,
       brokerCount: broker.length,
@@ -397,18 +304,10 @@ async function buildTrueCurve(
 ): Promise<{
   points: Array<CurvePoint & { invested: number }>;
   missingSymbols: Array<{ symbol: string; name: string | null }>;
-  /**
-   * Symbols with no price history, valued at their known average cost from
-   * the trade log (flat, honest). The UI labels them separately from the
-   * truly-missing ones.
-   */
-  estimatedSymbols: Array<{ symbol: string; name: string | null }>;
   /** source key → downsampled daily {date, value, invested} (trade-log only). */
   perSource: Record<string, PricedDay[]>;
   /** Monthly buckets from the full-resolution series (all history). */
   monthly: MonthCell[];
-  /** Distinct normalized leg sources in the curve (e.g. ["ibkr","manual"]). */
-  legSources: string[];
 } | null> {
   const symbols = [
     ...new Set(txns.map((t) => t.symbol.trim().toUpperCase())),
@@ -456,11 +355,11 @@ async function buildTrueCurve(
 
   const holdings = buildDailyHoldings(txns, fxToUsd);
   if (holdings.length === 0) return null;
-  const {
-    priced,
-    missingSymbols: missingTotal,
-    estimatedSymbols: estimatedTotal,
-  } = aggregateDailyValue(holdings, closesBySymbol, fxToUsd);
+  const { priced, missingSymbols: missingTotal } = aggregateDailyValue(
+    holdings,
+    closesBySymbol,
+    fxToUsd,
+  );
 
   // Per-source breakdown for the By Source view: same price data, grouped by
   // each trade's origin. A separate cheap walk; the tested path above is
@@ -474,28 +373,16 @@ async function buildTrueCurve(
   const missingKeys = [
     ...new Set([...missingTotal, ...bySource.missingSymbols]),
   ];
-  const estimatedKeys = [
-    ...new Set([...estimatedTotal, ...bySource.estimatedSymbols]),
-  ];
   // Resolve display names for the "prices missing" modal. Best-effort:
   // getQuote never throws (unavailable → name null) and rides the 60s quote
   // cache, so this only costs network on the rare non-empty case.
-  // Estimated symbols get names too — they're shown in the same modal with
-  // their own "valued at cost" label.
   let missingSymbols: Array<{ symbol: string; name: string | null }> =
     missingKeys.map((symbol) => ({ symbol, name: null }));
-  let estimatedSymbols: Array<{ symbol: string; name: string | null }> =
-    estimatedKeys.map((symbol) => ({ symbol, name: null }));
-  const nameKeys = [...new Set([...missingKeys, ...estimatedKeys])];
-  if (nameKeys.length > 0) {
+  if (missingKeys.length > 0) {
     try {
-      const quotes = await getQuotes(nameKeys);
+      const quotes = await getQuotes(missingKeys);
       const names = new Map(quotes.map((q) => [q.symbol, q.name]));
       missingSymbols = missingKeys.map((symbol) => ({
-        symbol,
-        name: names.get(symbol) ?? null,
-      }));
-      estimatedSymbols = estimatedKeys.map((symbol) => ({
         symbol,
         name: names.get(symbol) ?? null,
       }));
@@ -533,10 +420,8 @@ async function buildTrueCurve(
   return {
     points: downsamplePoints(points, 180),
     missingSymbols,
-    estimatedSymbols,
     perSource,
     monthly,
-    legSources: [...new Set(txns.map((t) => t.source.trim().toLowerCase()))],
   };
 }
 
@@ -569,86 +454,6 @@ export const portfolioRouter = createTRPCRouter({
         take: input.limit,
       })
     ),
-
-  /**
-   * Diamond-hands stats: per-position tenure + dip survival from the
-   * transaction log and Yahoo history (D1-cached), plus the buy streak.
-   * Drawdown is computed for the top 8 positions by value to bound cost;
-   * a symbol with no history returns nulls, never an error.
-   */
-  handsStats: publicProcedure
-    .input(summaryInput)
-    .query(async ({ ctx, input }) => {
-      const s = await buildSummary(ctx, input.brokerPositions);
-      const rows = s.rows.filter((r) => r.quantity > 0 && (r.marketValue ?? 0) > 0);
-      const txns = await ctx.db.transaction.findMany({
-        orderBy: [{ executedAt: "asc" }],
-        take: 10000,
-      });
-
-      const todayISO = new Date().toISOString().slice(0, 10);
-      const firstBuy = new Map<string, string>();
-      const buyMonths = new Set<string>();
-      for (const t of txns) {
-        const raw = t.executedAt instanceof Date ? t.executedAt.toISOString() : String(t.executedAt);
-        const day = raw.slice(0, 10);
-        if (t.type !== "BUY") continue;
-        buyMonths.add(day.slice(0, 7));
-        if (!firstBuy.has(t.symbol)) firstBuy.set(t.symbol, day);
-      }
-
-      const top = [...rows]
-        .sort((a, b) => (b.marketValue ?? 0) - (a.marketValue ?? 0))
-        .slice(0, 8);
-
-      const positions = await Promise.all(
-        top.map(async (r) => {
-          const fb = firstBuy.get(r.symbol) ?? null;
-          const daysHeld =
-            fb != null
-              ? Math.max(0, Math.round((Date.parse(todayISO) - Date.parse(fb)) / DAY_MS))
-              : null;
-          let maxDrawdownPct: number | null = null;
-          if (fb != null) {
-            try {
-              const hist = await getPriceHistory(ctx.db, r.symbol, fb, todayISO);
-              maxDrawdownPct = maxDrawdown(hist.bars.map((b) => b.adjclose ?? b.close));
-            } catch {
-              maxDrawdownPct = null;
-            }
-          }
-          return {
-            symbol: r.symbol,
-            name: r.name,
-            marketValue: r.marketValue ?? 0,
-            weightPct: r.weightPct ?? 0,
-            firstBuyDate: fb,
-            daysHeld,
-            maxDrawdownPct,
-          };
-        }),
-      );
-
-      const withTenure = positions.filter((p) => p.daysHeld != null);
-      const longestHeld =
-        withTenure.length > 0
-          ? withTenure.reduce((a, b) => ((b.daysHeld ?? 0) > (a.daysHeld ?? 0) ? b : a))
-          : null;
-      const withDip = positions.filter((p) => p.maxDrawdownPct != null);
-      const deepestDip =
-        withDip.length > 0
-          ? withDip.reduce((a, b) => ((b.maxDrawdownPct ?? 0) > (a.maxDrawdownPct ?? 0) ? b : a))
-          : null;
-
-      return {
-        positions,
-        longestHeld,
-        deepestDip,
-        buyStreakMonths: countBuyStreak(buyMonths),
-        buyMonths: buyMonths.size,
-      };
-    }),
-
 
   /**
    * Record today's portfolio snapshot for the equity curve. Called
@@ -684,16 +489,6 @@ export const portfolioRouter = createTRPCRouter({
     }),
 
   /**
-   * Wipe all daily snapshots. The chart rebuilds from trade history, so
-   * snapshots are only a fallback for accounts with no trade log —
-   * resetting gives a clean series under the current valuation logic.
-   */
-  clearSnapshots: publicProcedure.mutation(async ({ ctx }) => {
-    const r = await ctx.db.portfolioSnapshot.deleteMany();
-    return { ok: true, cleared: r.count };
-  }),
-
-  /**
    * Equity curve for the Performance section — works from day one.
    *
    * Source priority:
@@ -707,32 +502,13 @@ export const portfolioRouter = createTRPCRouter({
   equityCurve: publicProcedure
     .input(
       z
-        .object({
-          days: z.number().int().min(0).max(3650).default(90),
-          /**
-           * Restrict the curve to these leg sources (e.g. ["manual","ibkr"]).
-           * The dashboard passes the sources present in the live summary so
-           * a disconnected platform's history can't inflate the comparison —
-           * performance always reflects the connected portfolio. Empty =
-           * no filtering.
-           */
-          onlySources: z.array(z.string()).max(20).default([]),
-        })
+        .object({ days: z.number().int().min(0).max(3650).default(90) })
         .merge(summaryInput),
     )
     .query(async ({ ctx, input }) => {
-      // Curve legs = Transaction log + raw Flex BrokerTrade rows, so the
-      // true curve covers IBKR positions whose trades never made it into
-      // the log (mergeIbkrTrades skips unreconciled symbols). See
-      // mergeCurveLegs for the honesty rules.
-      const { legs: txns } = await curveTradeLegs(ctx.db, input.onlySources);
-
-      // Filtered to a universe with no history at all — no curve, and the
-      // snapshots/invested fallbacks below would show the WRONG (unfiltered)
-      // portfolio, so stop here.
-      if (input.onlySources.length > 0 && txns.length === 0) {
-        return { source: "none" as const, points: [], legSources: [] as string[] };
-      }
+      const txns = await ctx.db.transaction.findMany({
+        orderBy: [{ executedAt: "asc" }],
+      });
 
       // 1. True historical value curve. Yahoo/FX failures fall through to
       // the older sources — never a broken chart.
@@ -750,10 +526,8 @@ export const portfolioRouter = createTRPCRouter({
               source: "true" as const,
               points: tru.points,
               missingSymbols: tru.missingSymbols,
-              estimatedSymbols: tru.estimatedSymbols,
               perSource: tru.perSource,
               monthly: tru.monthly,
-              legSources: tru.legSources,
             };
           }
         } catch {
@@ -779,10 +553,9 @@ export const portfolioRouter = createTRPCRouter({
           points: downsamplePoints(
             inRange.map((r) => ({ date: r.date, value: r.marketValue })),
           ),
-          legSources: [...new Set(txns.map((t) => t.source.trim().toLowerCase()))],
         };
       }
-      if (txns.length === 0) return { source: "none" as const, points: [], legSources: [] as string[] };
+      if (txns.length === 0) return { source: "none" as const, points: [] };
       const fx = await getFxRates();
       const flows = txnsToUsdFlows(txns, fx);
       const s = await buildSummary(ctx, input.brokerPositions);
@@ -791,49 +564,26 @@ export const portfolioRouter = createTRPCRouter({
       });
       const source: "trades" | "none" =
         points.length >= 2 ? "trades" : "none";
-      return {
-        source,
-        points,
-        legSources: [...new Set(txns.map((t) => t.source.trim().toLowerCase()))],
-      };
+      return { source, points };
     }),
 
   /**
-   * Annualized internal rate of return from the transaction log. Buys are
-   * outflows, sells are inflows, today's market value is the terminal
-   * inflow — all converted to USD. Excludes dividends (they aren't in the
-   * log). XIRR stays null until 30 days of history exist: annualizing a
-   * shorter span explodes into noise (a 1% weekly wobble reads as ±68%
-   * "annualized").
-   *
-   * `onlySources` restricts both the legs and the terminal value to the
-   * same platform universe as the equity curve, so XIRR stays consistent
-   * with the connected portfolio.
+   * Annualized internal rate of return from the full transaction log.
+   * Buys are outflows, sells are inflows, today's market value is the
+   * terminal inflow — all converted to USD. Excludes dividends (they
+   * aren't in the log). XIRR stays null until 30 days of history exist:
+   * annualizing a shorter span explodes into noise (a 1% weekly wobble
+   * reads as ±68% "annualized").
    */
-  xirr: publicProcedure
-    .input(
-      summaryInput.merge(
-        z.object({ onlySources: z.array(z.string()).max(20).default([]) }),
-      ),
-    )
-    .query(async ({ ctx, input }) => {
-    // Same legs as the curve — XIRR and the chart must tell one story.
-    const { legs: txns } = await curveTradeLegs(ctx.db, input.onlySources);
+  xirr: publicProcedure.input(summaryInput).query(async ({ ctx, input }) => {
+    const txns = await ctx.db.transaction.findMany({
+      orderBy: [{ executedAt: "asc" }],
+    });
     const fx = await getFxRates();
     const flows = txnsToUsdFlows(txns, fx);
     const s = await buildSummary(ctx, input.brokerPositions);
-    // Terminal value over the same universe as the legs — a disconnected
-    // platform's history must not be measured against a live value that
-    // doesn't contain it (or vice versa).
-    const allow = new Set(input.onlySources.map((x) => x.trim().toLowerCase()));
-    const terminalValue =
-      input.onlySources.length === 0
-        ? s.totals.marketValue
-        : s.rows
-            .filter((r) => allow.has(legSourceOf(r)))
-            .reduce((sum, r) => sum + (r.marketValue ?? 0), 0);
-    if (terminalValue > 0) {
-      flows.push({ date: new Date(), amount: terminalValue });
+    if (s.totals.marketValue > 0) {
+      flows.push({ date: new Date(), amount: s.totals.marketValue });
     }
     const times = flows.map((f) => f.date.getTime());
     const spanDays =
@@ -896,7 +646,7 @@ export const portfolioRouter = createTRPCRouter({
         totals: z.object({
           marketValue: z.number(),
           dayPL: z.number().nullable(),
-          totalPL: z.number().nullable(),
+          totalPL: z.number(),
           totalPLPct: z.number().nullable(),
         }),
         recentTrades: z
@@ -1023,51 +773,8 @@ export const portfolioRouter = createTRPCRouter({
       if (!existing) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Transaction not found" });
       }
-      // Tombstone first: otherwise the next IBKR auto-sync re-imports the
-      // row and the user's delete is silently undone.
-      await tombstoneTransaction(db, existing);
       await db.transaction.delete({ where: { id: input.id } });
       await recomputeHolding(db, existing.symbol);
-      return { ok: true };
-    }),
-
-  /**
-   * Edit one transaction in place (fix typos without delete + re-add);
-   * the holding is recomputed from the full log afterwards.
-   */
-  updateTransaction: publicProcedure
-    .input(
-      z.object({
-        id: z.string().min(1),
-        type: z.enum(["BUY", "SELL"]),
-        quantity: z.number().positive(),
-        price: z.number().positive(),
-        fees: z.number().min(0).default(0),
-        executedAt: z.date(),
-        note: z.string().trim().max(280).default(""),
-      }),
-    )
-    .mutation(async ({ ctx, input }) => {
-      // Sequential, not an interactive $transaction (unsupported on D1).
-      const existing = await ctx.db.transaction.findUnique({
-        where: { id: input.id },
-      });
-      if (!existing) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Transaction not found" });
-      }
-      await ctx.db.transaction.update({
-        where: { id: input.id },
-        data: {
-          type: input.type,
-          quantity: input.quantity,
-          price: input.price,
-          fees: input.fees,
-          executedAt: input.executedAt,
-          note: input.note === "" ? null : input.note,
-        },
-      });
-      // Throws BAD_REQUEST if the edited sell exceeds the held quantity.
-      await recomputeHolding(ctx.db, existing.symbol);
       return { ok: true };
     }),
 
@@ -1076,51 +783,22 @@ export const portfolioRouter = createTRPCRouter({
     .input(z.object({ symbol: symbolSchema }))
     .mutation(async ({ ctx, input }) => {
       // Sequential, not an interactive $transaction (unsupported on D1).
-      // Tombstone every row first — otherwise the next IBKR auto-sync
-      // re-imports the whole history and the delete is silently undone.
-      const rows = await ctx.db.transaction.findMany({
-        where: { symbol: input.symbol },
-        orderBy: [{ executedAt: "asc" }],
-      });
-      for (const r of rows) {
-        await tombstoneTransaction(ctx.db, r);
-      }
       await ctx.db.transaction.deleteMany({ where: { symbol: input.symbol } });
       await ctx.db.holding.deleteMany({ where: { symbol: input.symbol } });
       return { ok: true };
     }),
 
-  /**
-   * Export the minimal backup: just enough to fully restore the user's
-   * config and data.
-   * - transactions: the source of truth (holdings recompute from these).
-   * - priceAlerts: user config (when logged in).
-   * - clientPrefs: embedded client-side (allowlisted UI config only).
-   * Deliberately excluded: holdings (recomputed), broker/exchange
-   * snapshots + Yahoo bars (re-synced/re-fetched), credentials (never).
-   */
+  /** Export all user data as JSON for backup. */
   exportBackup: publicProcedure.query(async ({ ctx }) => {
-    const session = ctx.session;
-    const userId = session?.user?.id;
-    const [transactions, priceAlerts] = await Promise.all([
+    const [transactions, holdings] = await Promise.all([
       ctx.db.transaction.findMany({ orderBy: [{ executedAt: "desc" }] }),
-      userId
-        ? ctx.db.priceAlert.findMany({
-            where: { userId },
-            orderBy: [{ createdAt: "asc" }],
-          })
-        : Promise.resolve([]),
+      ctx.db.holding.findMany({ orderBy: { symbol: "asc" } }),
     ]);
     return {
-      version: 3,
+      version: 1,
       exportedAt: new Date().toISOString(),
       transactions,
-      priceAlerts: priceAlerts.map((a) => ({
-        symbol: a.symbol,
-        targetPrice: a.targetPrice,
-        direction: a.direction,
-        active: a.active,
-      })),
+      holdings,
     };
   }),
 
@@ -1128,7 +806,7 @@ export const portfolioRouter = createTRPCRouter({
   importBackup: publicProcedure
     .input(
       z.object({
-        version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+        version: z.literal(1),
         transactions: z.array(
           z.object({
             symbol: z.string(),
@@ -1142,22 +820,7 @@ export const portfolioRouter = createTRPCRouter({
             externalId: z.string().nullable().optional(),
           }),
         ),
-        // Legacy payloads (accepted, ignored): v1 exported holdings,
-        // v2 exported brokerPositions for verification — neither was ever
-        // restored, and v3 no longer exports them.
         holdings: z.array(z.unknown()).optional(),
-        brokerPositions: z.array(z.unknown()).optional(),
-        // v3: user price-alert config.
-        priceAlerts: z
-          .array(
-            z.object({
-              symbol: z.string(),
-              targetPrice: z.number(),
-              direction: z.string(),
-              active: z.boolean().optional(),
-            }),
-          )
-          .optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1195,84 +858,6 @@ export const portfolioRouter = createTRPCRouter({
       for (const t of input.transactions) {
         await recomputeHolding(ctx.db, t.symbol);
       }
-      // Restore price alerts (v3, logged-in users only).
-      let alertsRestored = 0;
-      const session = ctx.session;
-      const userId = session?.user?.id;
-      if (userId && session && input.priceAlerts) {
-        const aExisting = await ctx.db.priceAlert.findMany({
-          where: { userId },
-        });
-        for (const a of aExisting) {
-          await ctx.db.priceAlert.delete({ where: { id: a.id } });
-        }
-        const email = session.user.email ?? "";
-        for (const pa of input.priceAlerts) {
-          if (pa.direction !== "above" && pa.direction !== "below") continue;
-          const created = await ctx.db.priceAlert.create({
-            data: {
-              userId,
-              email,
-              symbol: pa.symbol,
-              targetPrice: pa.targetPrice,
-              direction: pa.direction,
-            },
-          });
-          if (pa.active === false) {
-            await ctx.db.priceAlert.update({
-              where: { id: created.id },
-              data: { active: false },
-            });
-          }
-          alertsRestored++;
-        }
-      }
-      return {
-        ok: true,
-        restored: input.transactions.length,
-        alertsRestored,
-      };
-    }),
-
-  clearManualData: publicProcedure
-    .input(z.object({ includeIbkr: z.boolean().default(false) }))
-    .mutation(async ({ ctx, input }) => {
-      // One-click cleanup of the manual section: delete hand-entered trades
-      // (or the whole log on a full reset, including IBKR-imported rows) and
-      // rebuild whatever holdings survive. Broker snapshots are untouched.
-      const all = await ctx.db.transaction.findMany({
-        orderBy: [{ executedAt: "desc" }],
-        take: 100000,
-      });
-      const doomed = input.includeIbkr
-        ? all
-        : all.filter((t) => t.source === "manual");
-      for (const t of doomed) {
-        // Tombstone IBKR-imported rows before deleting: otherwise the next
-        // auto-sync re-imports them and the reset is silently undone.
-        if (t.externalId) await tombstoneTransaction(ctx.db, t);
-        await ctx.db.transaction.delete({ where: { id: t.id } });
-      }
-      const failed: string[] = [];
-      if (input.includeIbkr) {
-        const holdings = await ctx.db.holding.findMany({
-          orderBy: { symbol: "asc" },
-        });
-        for (const h of holdings) {
-          await ctx.db.holding.deleteMany({ where: { symbol: h.symbol } });
-        }
-      } else {
-        // Delete ALL holdings in the manual section — the user asked to
-        // clear them and rebuild from IBKR full history afterwards.
-        // (Recomputing from the current incomplete log would just resurrect
-        // the same stale rows.)
-        const holdings = await ctx.db.holding.findMany({
-          orderBy: { symbol: "asc" },
-        });
-        for (const h of holdings) {
-          await ctx.db.holding.deleteMany({ where: { symbol: h.symbol } });
-        }
-      }
-      return { deletedTrades: doomed.length, failed };
+      return { ok: true, restored: input.transactions.length };
     }),
 });

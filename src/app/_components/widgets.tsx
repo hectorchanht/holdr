@@ -43,8 +43,7 @@ interface LayoutState {
   collapsed: Record<string, boolean>;
 }
 
-const STORAGE_KEY = "holdr.dashboard-layout.v2";
-const LEGACY_STORAGE_KEY = "holdr.dashboard-layout.v1";
+const STORAGE_KEY = "holdr.dashboard-layout.v1";
 
 function defaultLayout(defs: WidgetDef[]): LayoutState {
   return {
@@ -60,8 +59,14 @@ function defaultLayout(defs: WidgetDef[]): LayoutState {
 
 function loadLayout(defs: WidgetDef[]): LayoutState {
   const d = defaultLayout(defs);
-  const defIds = new Set(defs.map((x) => x.id));
-  const applyPrefs = (saved: Partial<LayoutState>) => {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return d;
+    const saved = JSON.parse(raw) as Partial<LayoutState>;
+    const defIds = new Set(defs.map((x) => x.id));
+    // Keep saved order for known widgets; append new ones at the end.
+    const order = (saved.order ?? []).filter((id) => defIds.has(id));
+    for (const def of defs) if (!order.includes(def.id)) order.push(def.id);
     const spans: Record<string, WidgetSpan> = { ...d.spans };
     for (const [k, v] of Object.entries(saved.spans ?? {})) {
       if (defIds.has(k) && (v === "full" || v === "half")) spans[k] = v;
@@ -70,25 +75,7 @@ function loadLayout(defs: WidgetDef[]): LayoutState {
     for (const [k, v] of Object.entries(saved.collapsed ?? {})) {
       if (defIds.has(k)) collapsed[k] = !!v;
     }
-    return { spans, collapsed };
-  };
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const saved = JSON.parse(raw) as Partial<LayoutState>;
-      // Keep saved order for known widgets; append new ones at the end.
-      const order = (saved.order ?? []).filter((id) => defIds.has(id));
-      for (const def of defs) if (!order.includes(def.id)) order.push(def.id);
-      return { order, ...applyPrefs(saved) };
-    }
-    // First run after the reorder: migrate v1 span/collapse prefs onto the
-    // new default order instead of carrying the old order over.
-    const legacy = window.localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (legacy) {
-      const saved = JSON.parse(legacy) as Partial<LayoutState>;
-      return { order: d.order, ...applyPrefs(saved) };
-    }
-    return d;
+    return { order, spans, collapsed };
   } catch {
     return d;
   }

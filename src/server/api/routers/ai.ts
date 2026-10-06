@@ -40,7 +40,7 @@ export const chatInputSchema = z.object({
     totals: z.object({
       marketValue: z.number(),
       dayPL: z.number().nullable(),
-      totalPL: z.number().nullable(),
+      totalPL: z.number(),
       totalPLPct: z.number().nullable(),
     }),
     recentTrades: z

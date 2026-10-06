@@ -3,12 +3,7 @@ import "server-only";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 // Re-export pure helpers (also available from ~/server/currency directly).
-export {
-  isHkCode,
-  inferCurrency,
-  toUsd,
-  canonicalSymbol,
-} from "~/server/currency";
+export { isHkCode, inferCurrency, toUsd } from "~/server/currency";
 import { isHkCode } from "~/server/currency";
 
 /**
@@ -39,11 +34,9 @@ export interface Quote {
 const CACHE_TTL_MS = 60_000;
 const quoteCache = new Map<string, { at: number; quote: Quote }>();
 
-/** Yahoo ticker for a symbol — HK codes need the .HK suffix (idempotent). */
+/** Yahoo ticker for a symbol — HK codes need the .HK suffix. */
 function yahooTicker(symbol: string): string {
-  const s = symbol.trim();
-  if (/\.HK$/i.test(s)) return s;
-  return isHkCode(s) ? `${s}.HK` : s;
+  return isHkCode(symbol) ? `${symbol.trim()}.HK` : symbol;
 }
 
 function emptyQuote(symbol: string): Quote {

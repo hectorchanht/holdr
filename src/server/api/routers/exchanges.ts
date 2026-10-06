@@ -5,17 +5,12 @@ import { createTRPCRouter, protectedProcedure, publicProcedure } from "~/server/
 import {
   ExchangeError,
   binancePriceFetcherFromTickers,
-  computeBinanceCostBasis,
   fetchBinanceBalances,
   fetchBinancePrice,
   fetchCoinbaseBalances,
   fetchCoinbasePrice,
-  fetchKrakenBalances,
-  fetchKrakenPrice,
   validateBinanceDirectPayload,
-  validateBinanceTradesPayload,
   valuate,
-  type BinanceSpotTrade,
   type ExchangeName,
   type NativeBalance,
   type PriceFetcher,
@@ -24,24 +19,22 @@ import {
 import { decryptCredentials, encryptCredentials } from "~/server/crypto";
 import type { AppDb } from "~/server/db";
 
-const exchangeEnum = z.enum(["coinbase", "binance", "kraken"]);
+const exchangeEnum = z.enum(["coinbase", "binance"]);
 
 const SETUP_HINTS: Record<ExchangeName, string> = {
   coinbase:
     "Coinbase is not connected. On coinbase.com go to your profile → API (or Settings → API), create an API key with only portfolio/read permissions — never enable trading or transfers. Paste the API key + secret below.",
   binance:
     "Binance is not connected. On binance.com go to Profile → API Management, create an API key with ONLY 'Enable Reading' checked (leave trading and withdrawals OFF; an IP whitelist is recommended). Paste the API key + secret below.",
-  kraken:
-    "Kraken is not connected. On kraken.com go to Settings → API, create an API key with ONLY 'Query Funds' permission (leave all trading, deposit and withdrawal permissions OFF). Paste the API key + secret below.",
 };
 
 const keySchema = z.string().min(1).max(500);
 const secretSchema = z.string().min(1).max(2000);
 
 function priceFetcherFor(exchange: ExchangeName): PriceFetcher {
-  if (exchange === "coinbase") return (asset) => fetchCoinbasePrice(asset);
-  if (exchange === "kraken") return (asset) => fetchKrakenPrice(asset);
-  return (asset) => fetchBinancePrice(asset);
+  return exchange === "coinbase"
+    ? (asset) => fetchCoinbasePrice(asset)
+    : (asset) => fetchBinancePrice(asset);
 }
 
 async function fetchBalances(
@@ -50,9 +43,9 @@ async function fetchBalances(
   apiSecret: string,
 ): Promise<NativeBalance[]> {
   try {
-    if (exchange === "coinbase") return await fetchCoinbaseBalances(apiKey, apiSecret);
-    if (exchange === "kraken") return await fetchKrakenBalances(apiKey, apiSecret);
-    return await fetchBinanceBalances(apiKey, apiSecret);
+    return exchange === "coinbase"
+      ? await fetchCoinbaseBalances(apiKey, apiSecret)
+      : await fetchBinanceBalances(apiKey, apiSecret);
   } catch (e) {
     // ExchangeError messages never contain key material (only status codes
     // and the exchange's own error text).
@@ -104,7 +97,7 @@ async function resolveCreds(
   throw new TRPCError({ code: "PRECONDITION_FAILED", message: SETUP_HINTS[exchange] });
 }
 
-function toValuationJson(v: Valuation, costByAsset?: Map<string, { avgCostUsd: string | null; tradeCount: number }>) {
+function toValuationJson(v: Valuation) {
   return {
     items: v.items.map((i) => ({
       asset: i.asset,
@@ -113,36 +106,13 @@ function toValuationJson(v: Valuation, costByAsset?: Map<string, { avgCostUsd: s
       priceSource: i.priceSource,
       priceAt: i.priceAt,
       valueCents: i.valueCents == null ? null : Number(i.valueCents),
-      avgCostUsd: costByAsset?.get(i.asset)?.avgCostUsd ?? null,
-      costTradeCount: costByAsset?.get(i.asset)?.tradeCount ?? null,
     })),
     totalCents: Number(v.totalCents),
     driftCents: Number(v.driftCents),
     reconciled: v.reconciled,
     pricedCount: v.pricedCount,
     unpriced: v.unpriced,
-    costAssets: costByAsset ? [...costByAsset.values()].filter((c) => c.avgCostUsd != null).length : 0,
-    costTrades: costByAsset ? [...costByAsset.values()].reduce((s, c) => s + c.tradeCount, 0) : 0,
   };
-}
-
-/**
- * Real cost basis per asset from browser-posted myTrades history.
- * Returns a map asset -> { avgCostUsd, tradeCount }. Empty map when no
- * trades were posted — every asset then honestly reports unknown cost.
- */
-function binanceCostByAsset(tradesJson: unknown): Map<string, { avgCostUsd: string | null; tradeCount: number }> {
-  const out = new Map<string, { avgCostUsd: string | null; tradeCount: number }>();
-  let perPair: Array<{ symbol: string; trades: BinanceSpotTrade[] }>;
-  try {
-    perPair = validateBinanceTradesPayload(tradesJson);
-  } catch {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid Binance trades payload." });
-  }
-  for (const b of computeBinanceCostBasis(perPair)) {
-    out.set(b.asset, { avgCostUsd: b.avgCostUsd, tradeCount: b.tradeCount });
-  }
-  return out;
 }
 
 export const exchangesRouter = createTRPCRouter({
@@ -168,12 +138,11 @@ export const exchangesRouter = createTRPCRouter({
     > = {
       coinbase: emptyStatus(),
       binance: emptyStatus(),
-      kraken: emptyStatus(),
     };
     if (!userId) return { exchanges: out };
 
     const creds = await ctx.db.exchangeCredential.findMany({ where: { userId } });
-    for (const exchange of ["coinbase", "binance", "kraken"] as const) {
+    for (const exchange of ["coinbase", "binance"] as const) {
       const cred = creds.find((c) => c.exchange === exchange);
       if (!cred) continue;
       let keyLast4: string | null = null;
@@ -223,8 +192,6 @@ export const exchangesRouter = createTRPCRouter({
           priceSource: r.priceSource,
           priceAt: r.priceAt,
           valueCents: r.valueCents == null ? null : centsToNumber(r.valueCents),
-          avgCostUsd: r.avgCostUsd,
-          costTradeCount: r.costTradeCount,
           currency: r.currency,
           syncedAt: r.syncedAt,
         })),
@@ -324,13 +291,6 @@ export const exchangesRouter = createTRPCRouter({
       z.object({
         accountJson: z.unknown(),
         tickersJson: z.unknown(),
-        /**
-         * Optional raw myTrades history per pair, posted by the browser
-         * after the balance sync: [{ symbol: "BTCUSDT", trades: [...] }].
-         * The server computes each asset's real average cost basis from
-         * these fills (USDT-quoted only — never estimated).
-         */
-        tradesJson: z.unknown().optional(),
         label: z.string().max(80).optional(),
       }),
     )
@@ -350,9 +310,6 @@ export const exchangesRouter = createTRPCRouter({
         binancePriceFetcherFromTickers(payload.tickers),
         nowIso,
       );
-      // Real cost basis from the account's own fill history (best-effort:
-      // absent when the browser skipped the trades fetch).
-      const costByAsset = binanceCostByAsset(input.tradesJson);
 
       if (!v.reconciled) {
         console.warn(
@@ -382,8 +339,6 @@ export const exchangesRouter = createTRPCRouter({
               priceAt: i.priceAt,
               valueCents: i.valueCents == null ? null : i.valueCents.toString(),
               currency: "USD",
-              avgCostUsd: costByAsset.get(i.asset)?.avgCostUsd ?? null,
-              costTradeCount: costByAsset.get(i.asset)?.tradeCount ?? null,
             })),
           });
         }
@@ -407,7 +362,7 @@ export const exchangesRouter = createTRPCRouter({
         exchange: "binance" as const,
         persisted,
         syncedAt: new Date(),
-        ...toValuationJson(v, costByAsset),
+        ...toValuationJson(v),
       };
     }),
 

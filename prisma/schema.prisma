@@ -29,9 +29,8 @@ model Holding {
     quantity Float
     avgCost  Float // average cost basis per share (fees folded in)
 
-    createdAt DateTime  @default(now())
-    updatedAt DateTime  @updatedAt
-    deletedAt DateTime? // soft delete: cleared holdings are recoverable
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
 
     @@index([symbol])
 }
@@ -61,25 +60,6 @@ model Transaction {
     @@index([executedAt])
 }
 
-// Tombstones for user-deleted transactions. IBKR auto-sync re-imports any
-// trade whose externalId is missing from the log — without this table a
-// deleted trade is silently "restored" on the next sync. IBKR rows are
-// keyed by externalId; manual rows (externalId null) are matched by their
-// (symbol, type, quantity, price, date) with the same tolerances as the
-// import dedupe, so a deleted manual trade can't come back as an ibkr row.
-model DeletedTransaction {
-    id         String   @id @default(cuid())
-    symbol     String
-    type       String
-    quantity   Float
-    price      Float
-    executedAt DateTime
-    externalId String?  @unique
-    deletedAt  DateTime @default(now())
-
-    @@index([symbol])
-}
-
 // Snapshot of positions synced from Interactive Brokers via the
 // Flex Web Service (read-only). Refreshed by ibkr.sync; the same sync merges
 // the Flex trades into the Transaction log, which stays the source of truth
@@ -93,7 +73,6 @@ model BrokerPosition {
     currency      String
     quantity      Float
     markPrice     Float?
-    costBasisPrice Float? // per-share cost basis from the broker (IBKR Flex); null when the broker doesn't report it
     syncedAt      DateTime @default(now())
 
     @@index([accountId])
@@ -140,25 +119,6 @@ model BrokerCashFlow {
     @@index([type])
 }
 
-// Older-window cash flows collected by the history backfill. The main sync
-// wipes BrokerCashFlow on every run, so backfilled flows live here instead
-// (delete-then-insert per 365-day window keeps it idempotent).
-model BrokerCashFlowHistory {
-    id          String   @id @default(cuid())
-    userId      String
-    accountId   String
-    symbol      String?
-    description String?
-    currency    String
-    dateTime    String
-    amount      Float
-    type        String
-    syncedAt    DateTime @default(now())
-    user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-    @@index([userId, dateTime])
-}
-
 // Necessary for NextAuth
 model Account {
     id                       String  @id @default(cuid())
@@ -196,12 +156,9 @@ model User {
     accounts      Account[]
     sessions      Session[]
     brokerCredential BrokerCredential?
-    brokerBackfill   BrokerBackfill?
-    brokerCashFlowHistory BrokerCashFlowHistory[]
     exchangeCredentials ExchangeCredential[]
     exchangeBalances ExchangeBalance[]
     exchangeSyncs ExchangeSync[]
-    syncTokens    SyncToken[]
 }
 
 // Per-user IBKR Flex credentials, AES-GCM encrypted (see src/server/crypto.ts).
@@ -216,22 +173,6 @@ model BrokerCredential {
     createdAt  DateTime @default(now())
     updatedAt  DateTime @updatedAt
     user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
-
-// History-backfill cursor for the IBKR Flex sync. IBKR caps every
-// SendRequest at 365 days, so full history is fetched one 365-day window
-// per sync, walking backward from the main sync's window. One row per user.
-model BrokerBackfill {
-    id            String    @id @default(cuid())
-    userId        String    @unique
-    // Oldest date (YYYYMMDD) already covered by fetched windows.
-    oldestCovered String
-    // Consecutive fetched windows with zero trades and zero cash flows.
-    emptyStreak   Int       @default(0)
-    // Set when the backfill reached the floor date or the empty cap.
-    doneAt        DateTime?
-    updatedAt     DateTime  @updatedAt
-    user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 // Per-user read-only API credentials for crypto exchanges (Coinbase,
@@ -268,12 +209,6 @@ model ExchangeBalance {
     priceAt     String?  // ISO timestamp of the price fetch
     valueCents  String?  // integer USD cents as text, null when unpriced
     currency    String   @default("USD")
-    // Real cost basis: average cost in USD from the account's actual spot
-    // trade history (Binance myTrades), exact decimal string. Null when the
-    // cost is unknowable (no trade history — e.g. transferred in). Never
-    // estimated: unknown stays null so P/L can't silently fake it.
-    avgCostUsd     String?
-    costTradeCount Int?   // how many real fills avgCostUsd was computed from
     syncedAt    DateTime @default(now())
     user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -299,24 +234,6 @@ model ExchangeSync {
     @@index([userId, exchange])
 }
 
-// Long-lived bearer tokens for local sync agents (e.g. the Futu OpenD
-// sync script in tools/futu-sync). Only the SHA-256 hash is stored — the
-// plaintext token is shown once at creation and never again. Single-purpose
-// scopes ("futu:ingest"); revocable by the owner at any time.
-model SyncToken {
-    id         String    @id @default(cuid())
-    userId     String
-    name       String
-    tokenHash  String    @unique // SHA-256 hex of the bearer token
-    scope      String    // "futu:ingest"
-    createdAt  DateTime  @default(now())
-    lastUsedAt DateTime?
-    revokedAt  DateTime?
-    user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-    @@index([userId])
-}
-
 model VerificationToken {
     identifier String
     token      String   @unique
@@ -332,7 +249,7 @@ model PortfolioSnapshot {
     id            String   @id @default(cuid())
     date          String   @unique // YYYY-MM-DD (local date)
     marketValue   Float
-    costBasis     Float? // null when any position lacks a recorded cost — unknown is never $0
+    costBasis     Float
     totalPL       Float?
     dayPL         Float?
     holdingsCount Int      @default(0)

@@ -158,7 +158,7 @@ export function AiChat({
       totals: {
         marketValue: totals.marketValue,
         dayPL: totals.dayPL ?? null,
-        totalPL: totals.totalPL ?? null,
+        totalPL: totals.totalPL ?? 0,
         totalPLPct: totals.totalPLPct ?? null,
       },
       recentTrades: (txns ?? []).map((t) => ({
