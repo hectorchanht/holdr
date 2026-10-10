@@ -69,12 +69,14 @@ export const REFERRAL_LINKS: SponsorLink[] = (
 ).filter((l): l is SponsorLink => l !== null);
 
 /* ------------------------------------------------------------------ */
-/* Sponsored-strip hide flag (V2: Gumroad license-key verification).    */
+/* Sponsored-strip hide flag (choice model: explicit supporter toggle). */
 /* ------------------------------------------------------------------ */
 
 /**
- * localStorage flag: "1" = the strip is hidden. Set only after a license
- * key verifies via /api/verify-tip (Gumroad tip) or matches the admin key.
+ * localStorage flag: "1" = the strip is hidden. Only writable through the
+ * "Supporter" settings section's explicit "Hide sponsored strip" toggle,
+ * which is only available to verified supporters (Gumroad tip or admin key
+ * via /api/verify-tip).
  */
 export const SPONSORED_HIDDEN_KEY = "dawn_sponsored_hidden";
 
@@ -136,4 +138,47 @@ export function writeStoredLicenseKey(key: string): void {
   } catch {
     /* storage unavailable */
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Supporter flag (choice model): verifying a tip marks the user as a   */
+/* supporter; hiding the strip is a separate explicit toggle.           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * localStorage flag: "1" = this device verified a tip (Gumroad license or
+ * admin key). Set on successful verification. It does NOT hide the
+ * sponsored strip on its own — the strip only hides via the explicit
+ * `dawn_sponsored_hidden` toggle. Kept for future supporter-gated features.
+ */
+export const SUPPORTER_KEY = "dawn_supporter";
+
+/** Read the flag. Client-only: call inside useEffect / event handlers. */
+export function readSupporter(): boolean {
+  try {
+    return localStorage.getItem(SUPPORTER_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Write the flag. Client-only. */
+export function writeSupporter(supporter: boolean): void {
+  try {
+    if (supporter) localStorage.setItem(SUPPORTER_KEY, "1");
+    else localStorage.removeItem(SUPPORTER_KEY);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/**
+ * "Is this device a supporter?" SSR-safe: returns false during SSR/edge
+ * rendering where localStorage doesn't exist, so it can be imported and
+ * called anywhere without a hydration guard. Intended for future
+ * feature-gating; nothing is gated yet.
+ */
+export function isSupporter(): boolean {
+  if (typeof window === "undefined") return false;
+  return readSupporter();
 }

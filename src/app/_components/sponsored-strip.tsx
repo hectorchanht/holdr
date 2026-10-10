@@ -12,9 +12,12 @@ import {
 /**
  * Slim sponsored strip: the first content block under the app header.
  *
- * V2: no dismiss (×) button. The strip renders nothing when the
+ * Choice model: the strip renders nothing ONLY when the
  * `dawn_sponsored_hidden` flag is set — that flag is only writable through
- * the "Sponsored strip" settings section after Gumroad license verification.
+ * the "Supporter" settings section's explicit toggle, and only by verified
+ * supporters. Being a supporter (`dawn_supporter`) on its own never hides
+ * the strip: after tipping + verifying, the user chooses to keep the strip
+ * showing or hide it.
  *
  * Hydration-safe: `localStorage` is only read inside `useEffect`, and the
  * strip renders nothing until that check has run — no server/client mismatch.

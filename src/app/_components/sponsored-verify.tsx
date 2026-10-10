@@ -4,39 +4,56 @@ import { useEffect, useState } from "react";
 import { Check, Copy } from "lucide-react";
 
 import {
+  SPONSORED_HIDDEN_EVENT,
   readSponsoredHidden,
   readStoredLicenseKey,
+  readSupporter,
   writeSponsoredHidden,
   writeStoredLicenseKey,
+  writeSupporter,
 } from "~/lib/sponsored";
 
 type Status = "idle" | "verifying" | "error";
 
 /**
- * "Sponsored strip" settings section: Gumroad license-key verification that
- * hides the SponsoredStrip. Renders inside the header ⋯ settings menu.
+ * "Supporter" settings section: Gumroad license-key verification that marks
+ * the user as a supporter. Renders inside the header ⋯ settings menu.
  *
- * After a successful verification the key itself is persisted
- * (`dawn_tip_license_key`) and the input stays pre-filled, with a copy
- * button for reuse on another device/app. "Show again" clears only the
- * `dawn_sponsored_hidden` flag — the stored key survives, so re-hiding is
- * one Verify click. The stored key is only ever sent to /api/verify-tip on
- * an explicit Verify click, never auto-submitted.
+ * Choice model: a successful verification sets `dawn_supporter="1"` and
+ * persists the key itself (`dawn_tip_license_key`) — it does NOT hide the
+ * strip automatically. The supporter then chooses: a "Hide sponsored strip"
+ * toggle (default OFF) writes `dawn_sponsored_hidden`; the strip hides
+ * immediately, and flipping the toggle back off shows it again.
+ *
+ * The input stays pre-filled with the stored key, with a copy button for
+ * reuse on another device/app. The stored key is only ever sent to
+ * /api/verify-tip on an explicit Verify click, never auto-submitted.
  *
  * Hydration-safe: localStorage is only read inside `useEffect`.
  */
 export function SponsoredVerify() {
   const [mounted, setMounted] = useState(false);
-  const [hidden, setHidden] = useState(false);
+  const [supporter, setSupporter] = useState(false);
+  const [hideStrip, setHideStrip] = useState(false);
   const [key, setKey] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     setMounted(true);
-    setHidden(readSponsoredHidden());
+    const sync = () => {
+      setSupporter(readSupporter());
+      setHideStrip(readSponsoredHidden());
+    };
+    sync();
     const stored = readStoredLicenseKey();
     if (stored) setKey(stored);
+    window.addEventListener(SPONSORED_HIDDEN_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(SPONSORED_HIDDEN_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
   }, []);
 
   if (!mounted) return null;
@@ -84,10 +101,11 @@ export function SponsoredVerify() {
       });
       const data = (await res.json()) as { ok?: boolean };
       if (data.ok === true) {
-        // Persist the key for pre-fill + copy, then hide the strip.
+        // Persist the key for pre-fill + copy, mark the device as a
+        // supporter, and leave the strip as-is (no auto-hide).
         writeStoredLicenseKey(key.trim());
-        writeSponsoredHidden(true);
-        setHidden(true);
+        writeSupporter(true);
+        setSupporter(true);
         setStatus("idle");
       } else {
         setStatus("error");
@@ -97,29 +115,50 @@ export function SponsoredVerify() {
     }
   };
 
-  const showAgain = () => {
-    // Clears ONLY the hidden flag; the stored key stays pre-filled below.
-    writeSponsoredHidden(false);
-    setHidden(false);
+  const toggleHideStrip = (on: boolean) => {
+    // The explicit choice: hiding also marks the device for future
+    // supporter features; unhiding just shows the strip again.
+    writeSponsoredHidden(on);
+    setHideStrip(on);
   };
 
   return (
     <div className="text-sm text-zinc-800 dark:text-zinc-200">
-      {hidden ? (
+      {supporter ? (
         <div>
-          <p>☕ Thanks for tipping — the sponsored strip is hidden.</p>
+          <p>☕ You&apos;re a supporter — thanks for tipping!</p>
           <button
             type="button"
-            onClick={showAgain}
-            className="mt-1 text-xs text-zinc-500 underline hover:text-zinc-700 dark:hover:text-zinc-300"
+            role="switch"
+            aria-checked={hideStrip}
+            aria-label="Hide sponsored strip"
+            onClick={() => toggleHideStrip(!hideStrip)}
+            className="mt-2 flex items-center gap-2"
           >
-            Show again
+            <span
+              aria-hidden="true"
+              className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+                hideStrip ? "bg-zinc-800 dark:bg-zinc-100" : "bg-zinc-300 dark:bg-zinc-600"
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                  hideStrip ? "translate-x-4" : "translate-x-0.5"
+                }`}
+              />
+            </span>
+            <span className="text-sm text-zinc-800 dark:text-zinc-200">
+              Hide sponsored strip
+            </span>
           </button>
+          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+            Supporters can hide the strip anytime.
+          </p>
         </div>
       ) : (
         <p className="text-xs text-zinc-600 dark:text-zinc-400">
           Tipped us on Gumroad? Enter the license key from your purchase receipt
-          email to hide the sponsored strip.
+          email to become a supporter.
         </p>
       )}
       <div className="mt-2 text-xs font-medium text-zinc-600 dark:text-zinc-400">
@@ -156,7 +195,7 @@ export function SponsoredVerify() {
             {copied ? "Copied" : ""}
           </span>
         </button>
-        {!hidden && (
+        {!supporter && (
           <button
             type="button"
             onClick={() => void verify()}
