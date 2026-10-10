@@ -8,6 +8,7 @@ import {
   TIP_JAR_URL,
   readSponsoredHidden,
 } from "~/lib/sponsored";
+import { track } from "~/lib/posthog";
 
 /**
  * Slim sponsored strip: the first content block under the app header.
@@ -56,6 +57,7 @@ export function SponsoredStrip() {
         href={TIP_JAR_URL}
         target="_blank"
         rel="noopener"
+        onClick={() => track("tip_jar_opened", { location: "sponsored_strip" })}
         className="shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold"
         style={{ backgroundColor: "#F0A832", color: "#000000" }}
       >

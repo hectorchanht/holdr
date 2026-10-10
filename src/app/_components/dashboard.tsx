@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 
 import { api, type RouterOutputs } from "~/trpc/react";
+import { track } from "~/lib/posthog";
 import { BrokerCard } from "~/app/_components/broker";
 import { QuestradeCard } from "~/app/_components/questrade";
 import { FutuCard } from "~/app/_components/futu";
@@ -1304,6 +1305,7 @@ function TransactionForm() {
       setFees("");
       setNote("");
       setError(null);
+      track("holding_added", { source: "manual" });
     },
     onError: (e) => setError(e.message),
   });
@@ -1737,7 +1739,10 @@ function HeaderMenu() {
     <div className="relative">
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          if (!open) track("settings_opened");
+          setOpen((o) => !o);
+        }}
         aria-label="Settings menu"
         title="Settings"
         className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-zinc-200 dark:bg-zinc-800 px-2.5 py-2 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-700"
@@ -1793,6 +1798,9 @@ function HeaderMenu() {
                 href={TIP_JAR_URL}
                 target="_blank"
                 rel="noopener"
+                onClick={() =>
+                  track("tip_jar_opened", { location: "settings_menu" })
+                }
                 className="inline-flex items-center gap-2 text-sm text-zinc-800 dark:text-zinc-200 hover:underline"
               >
                 <Coffee size={15} className="shrink-0" />☕ Tip jar

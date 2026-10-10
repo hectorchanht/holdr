@@ -13,6 +13,7 @@ import {
   writeStoredLicenseKey,
   writeSupporter,
 } from "~/lib/sponsored";
+import { track } from "~/lib/posthog";
 
 type Status = "idle" | "verifying" | "error";
 
@@ -110,11 +111,15 @@ export function SponsoredVerify() {
         writeSupporter(true);
         setSupporter(true);
         setStatus("idle");
+        track("tip_verified", { success: true });
+        track("supporter_status_changed", { is_supporter: true });
       } else {
         setStatus("error");
+        track("tip_verified", { success: false });
       }
     } catch {
       setStatus("error");
+      track("tip_verified", { success: false });
     }
   };
 

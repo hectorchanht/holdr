@@ -5,6 +5,7 @@ import { useSession } from "next-auth/react";
 import { ArrowUpDown, Bell, X } from "lucide-react";
 
 import { api, type RouterOutputs } from "~/trpc/react";
+import { track } from "~/lib/posthog";
 
 /**
  * Price alerts: the user sets a target per symbol; a scheduled job checks
@@ -60,6 +61,7 @@ export function PriceAlerts() {
       setTarget("");
       setError(null);
       void listQ.refetch();
+      track("price_alert_created", { direction });
     },
     onError: (e) => setError(e.message),
   });

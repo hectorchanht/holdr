@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 
 import { api, type RouterOutputs } from "~/trpc/react";
+import { countBucket, track } from "~/lib/posthog";
 import { useCurrency } from "~/app/_components/currency";
 import {
   Code,
@@ -1091,6 +1092,9 @@ function BrowserBrokerCard({
       } catch {
         /* ignore */
       }
+      track("ibkr_sync_completed", {
+        holdings_count_bucket: countBucket(data.positions?.length ?? 0),
+      });
       const snap = { at: new Date().toISOString(), data };
       setSnapshot(snap);
       try {
