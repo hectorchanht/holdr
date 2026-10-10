@@ -1,19 +1,24 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { X } from "lucide-react";
 
-import { REFERRAL_LINKS, TIP_JAR_URL } from "~/lib/sponsored";
-
-/** localStorage flag: "1" = the user hid the strip (honor-system gesture for tippers). */
-const HIDDEN_KEY = "dawn_sponsored_hidden";
+import {
+  REFERRAL_LINKS,
+  SPONSORED_HIDDEN_EVENT,
+  TIP_JAR_URL,
+  readSponsoredHidden,
+} from "~/lib/sponsored";
 
 /**
  * Slim sponsored strip: the first content block under the app header.
  *
+ * V2: no dismiss (×) button. The strip renders nothing when the
+ * `dawn_sponsored_hidden` flag is set — that flag is only writable through
+ * the "Sponsored strip" settings section after Gumroad license verification.
+ *
  * Hydration-safe: `localStorage` is only read inside `useEffect`, and the
  * strip renders nothing until that check has run — no server/client mismatch.
- * Dismiss is an honor-system gesture, NOT license verification: no restore UI.
+ * A same-tab event + cross-tab "storage" event re-sync the flag live.
  */
 export function SponsoredStrip() {
   const [mounted, setMounted] = useState(false);
@@ -21,17 +26,19 @@ export function SponsoredStrip() {
 
   useEffect(() => {
     setMounted(true);
-    if (localStorage.getItem(HIDDEN_KEY) === "1") setHidden(true);
+    const sync = () => setHidden(readSponsoredHidden());
+    sync();
+    window.addEventListener(SPONSORED_HIDDEN_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(SPONSORED_HIDDEN_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
   }, []);
 
   if (!mounted || hidden) return null;
   // The tip jar is always set; if it ever goes empty the strip renders nothing.
   if (!TIP_JAR_URL && REFERRAL_LINKS.length === 0) return null;
-
-  const hide = () => {
-    localStorage.setItem(HIDDEN_KEY, "1");
-    setHidden(true);
-  };
 
   return (
     <div
@@ -63,15 +70,6 @@ export function SponsoredStrip() {
           {link.label}
         </a>
       ))}
-      <button
-        type="button"
-        onClick={hide}
-        aria-label="Hide the sponsored strip"
-        title="Tipped? Hide the sponsored strip"
-        className="shrink-0 rounded-full p-1 text-zinc-500 opacity-40 transition-opacity hover:opacity-100"
-      >
-        <X size={12} />
-      </button>
     </div>
   );
 }

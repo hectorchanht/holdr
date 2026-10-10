@@ -67,3 +67,73 @@ export const REFERRAL_LINKS: SponsorLink[] = (
     referral(AIRWALLEX_URL, "Airwallex", "#5a2bd9", "#FFFFFF"),
   ] as (SponsorLink | null)[]
 ).filter((l): l is SponsorLink => l !== null);
+
+/* ------------------------------------------------------------------ */
+/* Sponsored-strip hide flag (V2: Gumroad license-key verification).    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * localStorage flag: "1" = the strip is hidden. Set only after a license
+ * key verifies via /api/verify-tip (Gumroad tip) or matches the admin key.
+ */
+export const SPONSORED_HIDDEN_KEY = "dawn_sponsored_hidden";
+
+/**
+ * Window event dispatched in the same tab whenever the flag changes, so
+ * already-mounted components (the strip, the settings section) re-read it.
+ * The "storage" event covers cross-tab changes.
+ */
+export const SPONSORED_HIDDEN_EVENT = "dawn:sponsored-hidden-changed";
+
+/** Read the flag. Client-only: call inside useEffect / event handlers. */
+export function readSponsoredHidden(): boolean {
+  try {
+    return localStorage.getItem(SPONSORED_HIDDEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Write the flag and notify listeners in this tab. Client-only.
+ */
+export function writeSponsoredHidden(hidden: boolean): void {
+  try {
+    if (hidden) localStorage.setItem(SPONSORED_HIDDEN_KEY, "1");
+    else localStorage.removeItem(SPONSORED_HIDDEN_KEY);
+  } catch {
+    /* storage unavailable — listeners still get the event */
+  }
+  window.dispatchEvent(new Event(SPONSORED_HIDDEN_EVENT));
+}
+
+/* ------------------------------------------------------------------ */
+/* Persisted license key (V2 refinement).                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * localStorage key holding the last successfully verified license key.
+ * This is the user's own key on their own device. It is ONLY ever sent to
+ * the /api/verify-tip endpoint, and only on an explicit Verify click —
+ * never auto-submitted.
+ */
+export const TIP_LICENSE_KEY_STORAGE = "dawn_tip_license_key";
+
+/** Read the stored key, or null when absent. Client-only. */
+export function readStoredLicenseKey(): string | null {
+  try {
+    const v = localStorage.getItem(TIP_LICENSE_KEY_STORAGE);
+    return v && v.length > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist the key after a successful verification. Client-only. */
+export function writeStoredLicenseKey(key: string): void {
+  try {
+    localStorage.setItem(TIP_LICENSE_KEY_STORAGE, key);
+  } catch {
+    /* storage unavailable */
+  }
+}

@@ -92,6 +92,7 @@ import { AiInsights } from "~/app/_components/insights";
 import { AiChat } from "~/app/_components/ai-chat";
 import { SmartAlerts } from "~/app/_components/smart-alerts";
 import { SponsoredStrip } from "~/app/_components/sponsored-strip";
+import { SponsoredVerify } from "~/app/_components/sponsored-verify";
 import { TIP_JAR_URL } from "~/lib/sponsored";
 import {
   CurrencyPicker,
@@ -1761,6 +1762,10 @@ function HeaderMenu() {
             <div className="border-b border-zinc-300 dark:border-zinc-700/60 px-4 py-2.5">
               <div className="mb-1.5 text-xs uppercase tracking-wide text-zinc-500">Backup</div>
               <BackupButtons />
+            </div>
+            <div className="border-b border-zinc-300 dark:border-zinc-700/60 px-4 py-2.5">
+              <div className="mb-1.5 text-xs uppercase tracking-wide text-zinc-500">Sponsored strip</div>
+              <SponsoredVerify />
             </div>
             <div className="border-b border-zinc-300 dark:border-zinc-700/60 px-4 py-2.5">
               <a
