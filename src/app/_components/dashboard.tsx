@@ -10,6 +10,7 @@ import {
   BellRing,
   Briefcase,
   ChevronDown,
+  Coffee,
   Download,
   Gem,
   GripVertical,
@@ -1711,6 +1712,9 @@ function TransactionList() {
   );
 }
 
+/** Gumroad tip jar for the app itself. */
+const TIP_JAR_URL = "https://dawnlimited.gumroad.com/l/holdr-tip";
+
 /** Mobile overflow menu: global settings live here on all screens. */
 function HeaderMenu() {
   const { data: session, status } = useSession();
@@ -1758,6 +1762,16 @@ function HeaderMenu() {
             <div className="border-b border-zinc-300 dark:border-zinc-700/60 px-4 py-2.5">
               <div className="mb-1.5 text-xs uppercase tracking-wide text-zinc-500">Backup</div>
               <BackupButtons />
+            </div>
+            <div className="border-b border-zinc-300 dark:border-zinc-700/60 px-4 py-2.5">
+              <a
+                href={TIP_JAR_URL}
+                target="_blank"
+                rel="noopener"
+                className="inline-flex items-center gap-2 text-sm text-zinc-800 dark:text-zinc-200 hover:underline"
+              >
+                <Coffee size={15} className="shrink-0" />☕ Tip jar
+              </a>
             </div>
             <div>
               {session ? (
