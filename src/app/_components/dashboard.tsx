@@ -91,6 +91,8 @@ import { AllocationDonut } from "~/app/_components/allocation";
 import { AiInsights } from "~/app/_components/insights";
 import { AiChat } from "~/app/_components/ai-chat";
 import { SmartAlerts } from "~/app/_components/smart-alerts";
+import { SponsoredStrip } from "~/app/_components/sponsored-strip";
+import { TIP_JAR_URL } from "~/lib/sponsored";
 import {
   CurrencyPicker,
   CurrencyProvider,
@@ -1712,9 +1714,6 @@ function TransactionList() {
   );
 }
 
-/** Gumroad tip jar for the app itself. */
-const TIP_JAR_URL = "https://dawnlimited.gumroad.com/l/holdr-tip";
-
 /** Mobile overflow menu: global settings live here on all screens. */
 function HeaderMenu() {
   const { data: session, status } = useSession();
@@ -2530,6 +2529,8 @@ function DashboardInner() {
           <HeaderMenu />
         </div>
       </header>
+
+      <SponsoredStrip />
 
       {layout.editMode && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 px-3 py-2">
