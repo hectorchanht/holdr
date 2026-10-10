@@ -5,6 +5,7 @@ import { Check, Copy } from "lucide-react";
 
 import {
   SPONSORED_HIDDEN_EVENT,
+  SUPPORTER_EVENT,
   readSponsoredHidden,
   readStoredLicenseKey,
   readSupporter,
@@ -49,9 +50,11 @@ export function SponsoredVerify() {
     const stored = readStoredLicenseKey();
     if (stored) setKey(stored);
     window.addEventListener(SPONSORED_HIDDEN_EVENT, sync);
+    window.addEventListener(SUPPORTER_EVENT, sync);
     window.addEventListener("storage", sync);
     return () => {
       window.removeEventListener(SPONSORED_HIDDEN_EVENT, sync);
+      window.removeEventListener(SUPPORTER_EVENT, sync);
       window.removeEventListener("storage", sync);
     };
   }, []);
@@ -126,7 +129,15 @@ export function SponsoredVerify() {
     <div className="text-sm text-zinc-800 dark:text-zinc-200">
       {supporter ? (
         <div>
-          <p>☕ You&apos;re a supporter — thanks for tipping!</p>
+          <p className="flex items-center gap-2">
+            <span
+              className="inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold"
+              style={{ backgroundColor: "#F0A832", color: "#000000" }}
+            >
+              ☕ Supporter
+            </span>
+            <span>thanks for tipping!</span>
+          </p>
           <button
             type="button"
             role="switch"

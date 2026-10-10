@@ -93,7 +93,7 @@ import { AiChat } from "~/app/_components/ai-chat";
 import { SmartAlerts } from "~/app/_components/smart-alerts";
 import { SponsoredStrip } from "~/app/_components/sponsored-strip";
 import { SponsoredVerify } from "~/app/_components/sponsored-verify";
-import { TIP_JAR_URL } from "~/lib/sponsored";
+import { SUPPORTER_EVENT, TIP_JAR_URL, isSupporter } from "~/lib/sponsored";
 import {
   CurrencyPicker,
   CurrencyProvider,
@@ -1719,6 +1719,17 @@ function TransactionList() {
 function HeaderMenu() {
   const { data: session, status } = useSession();
   const [open, setOpen] = useState(false);
+  const [supporter, setSupporter] = useState(false);
+  useEffect(() => {
+    const sync = () => setSupporter(isSupporter());
+    sync();
+    window.addEventListener(SUPPORTER_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(SUPPORTER_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
   if (status === "loading") return null;
   const itemCls =
     "flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm text-zinc-800 dark:text-zinc-200 hover:bg-zinc-700";
@@ -1733,6 +1744,16 @@ function HeaderMenu() {
       >
         <MoreHorizontal size={18} />
       </button>
+      {supporter && (
+        <span
+          title="Supporter — thanks for tipping!"
+          aria-label="Supporter"
+          className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full text-[10px] shadow"
+          style={{ backgroundColor: "#F0A832" }}
+        >
+          ☕
+        </span>
+      )}
       {open && (
         <>
           <div

@@ -153,6 +153,13 @@ export function writeStoredLicenseKey(key: string): void {
  */
 export const SUPPORTER_KEY = "dawn_supporter";
 
+/**
+ * Window event dispatched in the same tab whenever the supporter flag
+ * changes, so already-mounted components (menu badge, settings section)
+ * re-read it. The "storage" event covers cross-tab changes.
+ */
+export const SUPPORTER_EVENT = "dawn:supporter-changed";
+
 /** Read the flag. Client-only: call inside useEffect / event handlers. */
 export function readSupporter(): boolean {
   try {
@@ -162,14 +169,15 @@ export function readSupporter(): boolean {
   }
 }
 
-/** Write the flag. Client-only. */
+/** Write the flag and notify listeners in this tab. Client-only. */
 export function writeSupporter(supporter: boolean): void {
   try {
     if (supporter) localStorage.setItem(SUPPORTER_KEY, "1");
     else localStorage.removeItem(SUPPORTER_KEY);
   } catch {
-    /* storage unavailable */
+    /* storage unavailable — listeners still get the event */
   }
+  window.dispatchEvent(new Event(SUPPORTER_EVENT));
 }
 
 /**
