@@ -63,6 +63,12 @@ export default function RootLayout({
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
+        {/* Cloudflare Web Analytics */}
+        <script
+          defer
+          src="https://static.cloudflareinsights.com/beacon.min.js"
+          data-cf-beacon={'{"token": "1615db00adab4e81899c971b6ab850c4"}'}
+        />
         <Providers>{children}</Providers>
       </body>
     </html>
