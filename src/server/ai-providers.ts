@@ -14,14 +14,9 @@ export const PROVIDERS = [
     needsKey: false,
     models: [
       { id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", name: "Llama 3.3 70B" },
-      { id: "@cf/qwen/qwen3-30b-a3b-fp8", name: "Qwen 3 30B" },
       { id: "@cf/meta/llama-3.1-8b-instruct", name: "Llama 3.1 8B" },
       { id: "@cf/mistral/mistral-7b-instruct-v0.2", name: "Mistral 7B" },
       { id: "@cf/qwen/qwen2.5-coder-32b-instruct", name: "Qwen 2.5 Coder 32B" },
-      {
-        id: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-        name: "DeepSeek R1 Distill 32B",
-      },
     ],
   },
   {
