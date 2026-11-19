@@ -2617,6 +2617,16 @@ function DashboardInner() {
           <footer className="pt-2 text-center text-xs text-zinc-600">
             Prices: Finnhub realtime when configured, else Yahoo (~15min
             delayed, Stooq fallback) · cached 60s · not financial advice
+            <div className="pt-1">
+              <a
+                href="https://dawnstudio.app/#manifesto"
+                target="_blank"
+                rel="noreferrer"
+                className="underline hover:text-zinc-400"
+              >
+                Dawn&apos;s apps are built by one creator, for himself first and for everyone, free — no ads, no data selling, basics free forever.
+              </a>
+            </div>
           </footer>
         </>
       )}
