@@ -686,10 +686,11 @@ export function TableToolbar<T>({
           <button
             type="button"
             onClick={clear}
+            aria-label="Clear search and filters"
+            title="Clear search and filters"
             className="inline-flex items-center gap-1 rounded-lg border border-zinc-300 dark:border-zinc-700 px-2 py-1.5 font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-700"
           >
             <X size={12} />
-            Clear
           </button>
         </span>
       )}

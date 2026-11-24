@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useSession } from "next-auth/react";
-import { ArrowUpDown, Bell, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Bell, BellPlus, X } from "lucide-react";
 
 import { api, type RouterOutputs } from "~/trpc/react";
 import { track } from "~/lib/posthog";
@@ -190,18 +190,26 @@ export function PriceAlerts() {
         <div className="col-span-1">
           <label className="mb-1 block text-xs text-zinc-500">Alert when</label>
           <div className="flex overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-700">
-            {(["above", "below"] as const).map((d) => (
+            {(
+              [
+                { key: "above", label: "Alert when price goes above target", Icon: ArrowUp },
+                { key: "below", label: "Alert when price goes below target", Icon: ArrowDown },
+              ] as const
+            ).map(({ key: d, label, Icon }) => (
               <button
                 key={d}
                 type="button"
                 onClick={() => setDirection(d)}
-                className={`flex-1 py-2 text-sm font-semibold capitalize ${
+                aria-pressed={direction === d}
+                aria-label={label}
+                title={label}
+                className={`flex flex-1 items-center justify-center py-2 text-sm font-semibold capitalize ${
                   direction === d
                     ? "bg-amber-600 text-white"
                     : "bg-white text-zinc-500 hover:bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
                 }`}
               >
-                {d}
+                <Icon size={15} />
               </button>
             ))}
           </div>
@@ -210,9 +218,11 @@ export function PriceAlerts() {
           <button
             type="submit"
             disabled={create.isPending}
-            className="w-full rounded-lg bg-amber-600 py-2 text-sm font-semibold text-white transition hover:bg-amber-500 disabled:opacity-50"
+            aria-label="Add alert"
+            title="Add alert"
+            className="flex w-full items-center justify-center rounded-lg bg-amber-600 py-2 text-sm font-semibold text-white transition hover:bg-amber-500 disabled:opacity-50"
           >
-            {create.isPending ? "Adding…" : "Add alert"}
+            <BellPlus size={16} className={create.isPending ? "animate-pulse" : ""} />
           </button>
         </div>
         {error && (

@@ -6,6 +6,8 @@ import {
   ArrowUpDown,
   Bell,
   ChevronDown,
+  SlidersHorizontal,
+  Sparkles,
   TrendingDown,
   TrendingUp,
   X,
@@ -262,9 +264,13 @@ export function SmartAlerts({ rows }: { rows: Row[] }) {
         <button
           type="button"
           onClick={() => setShowSettings((s) => !s)}
-          className="text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-300"
+          aria-expanded={showSettings}
+          aria-label={`Alert threshold settings: alert at ±${threshold}%`}
+          title="Alert threshold settings"
+          className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-300"
         >
-          Alert at ±{threshold}%
+          <SlidersHorizontal size={13} />
+          ±{threshold}%
         </button>
       </div>
 
@@ -390,9 +396,11 @@ export function SmartAlerts({ rows }: { rows: Row[] }) {
                     <button
                       type="button"
                       onClick={() => askAi(a.aiQuestion)}
-                      className="mt-2 rounded-lg border border-sky-800 bg-sky-950/40 px-2.5 py-1 text-xs font-medium text-sky-300 hover:bg-sky-900/40"
+                      aria-label="Ask AI about this alert"
+                      title="Ask AI about this alert"
+                      className="mt-2 inline-flex items-center rounded-lg border border-sky-800 bg-sky-950/40 px-2.5 py-1 text-xs font-medium text-sky-300 hover:bg-sky-900/40"
                     >
-                      Ask AI about this
+                      <Sparkles size={13} />
                     </button>
                   </div>
                 )}
@@ -403,11 +411,11 @@ export function SmartAlerts({ rows }: { rows: Row[] }) {
             <button
               type="button"
               onClick={() => setShowAll((s) => !s)}
+              aria-label={showAll ? "Show fewer alerts" : `Show all ${alerts.length} alerts`}
+              title={showAll ? "Show fewer alerts" : `Show all ${alerts.length} alerts`}
+              aria-expanded={showAll}
               className="flex w-full items-center justify-center gap-1 rounded-xl border border-zinc-300 dark:border-zinc-700/60 px-3 py-2 text-xs font-medium text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
             >
-              {showAll
-                ? "Show fewer"
-                : `Show all ${alerts.length} alerts`}
               <ChevronDown
                 size={13}
                 className={`transition-transform ${showAll ? "rotate-180" : ""}`}

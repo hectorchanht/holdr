@@ -566,10 +566,11 @@ export function ResetLayoutButton({ layout }: { layout: DashboardLayout }) {
           layout.reset();
         }
       }}
+      aria-label="Reset layout"
+      title="Reset layout"
       className="flex items-center gap-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-zinc-200/60 dark:bg-zinc-800/60 px-3 py-1.5 text-sm font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-700"
     >
       <RotateCcw size={14} />
-      Reset layout
     </button>
   );
 }

@@ -274,9 +274,11 @@ export function AiInsights({
               </select>
               <button
                 onClick={regenerate}
+                aria-label="Regenerate insights"
+                title="Regenerate insights"
                 className="rounded-lg border border-zinc-300 dark:border-zinc-700 px-2.5 py-1 text-xs text-zinc-700 dark:text-zinc-300 hover:border-zinc-500 hover:text-zinc-900 dark:text-zinc-100"
               >
-                <RefreshCw size={13} className="mr-1.5 inline" />Regenerate
+                <RefreshCw size={13} className="inline" />
               </button>
             </div>
           </div>
@@ -334,9 +336,11 @@ export function AiInsights({
           </p>
           <button
             onClick={regenerate}
+            aria-label="Retry insights"
+            title="Retry insights"
             className="shrink-0 rounded-lg border border-zinc-300 dark:border-zinc-700 px-2.5 py-1 text-xs text-zinc-700 dark:text-zinc-300 hover:border-zinc-500"
           >
-            <RefreshCw size={13} className="mr-1.5 inline" />Retry
+            <RefreshCw size={13} className="inline" />
           </button>
         </div>
       ) : rows.length === 0 ? (

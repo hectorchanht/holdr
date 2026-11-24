@@ -188,16 +188,20 @@ export function BackupButtons() {
         <button
           type="button"
           onClick={doExport}
+          aria-label="Export backup"
+          title="Export backup"
           className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800 px-2 py-1.5 text-xs text-zinc-800 dark:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-700"
         >
-          <Download size={13} /> Export
+          <Download size={13} />
         </button>
         <button
           type="button"
           onClick={() => fileRef.current?.click()}
+          aria-label="Import backup"
+          title="Import backup"
           className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800 px-2 py-1.5 text-xs text-zinc-800 dark:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-700"
         >
-          <Upload size={13} /> Import
+          <Upload size={13} />
         </button>
         <input
           ref={fileRef}
@@ -210,9 +214,11 @@ export function BackupButtons() {
       <button
         type="button"
         onClick={doResetSnapshots}
+        aria-label="Reset snapshots"
+        title="Reset snapshots"
         className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800 px-2 py-1.5 text-xs text-zinc-800 dark:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-700"
       >
-        <RotateCcw size={13} /> Reset snapshots
+        <RotateCcw size={13} />
       </button>
       {status && <p className="mt-1.5 text-xs text-zinc-500">{status}</p>}
     </div>

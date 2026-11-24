@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MessageCircle, Send, Settings2, Square } from "lucide-react";
+import { MessageCircle, Send, Settings2, Square, Trash2 } from "lucide-react";
 
 import { api, type RouterOutputs } from "~/trpc/react";
 import { useLocale } from "~/app/_components/locale";
@@ -357,9 +357,11 @@ export function AiChat({
             <button
               type="button"
               onClick={() => setMessages([])}
-              className="text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-300"
+              aria-label="Clear chat"
+              title="Clear chat"
+              className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-800 hover:text-zinc-700 dark:hover:text-zinc-300"
             >
-              Clear
+              <Trash2 size={14} />
             </button>
           )}
           <button

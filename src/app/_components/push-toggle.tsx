@@ -84,9 +84,10 @@ export function PushToggle() {
       disabled={busy || !vapidQuery.data}
       className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm text-zinc-800 dark:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-50"
       title={subscribed ? "Disable push notifications" : "Enable push notifications"}
+      aria-label={busy ? "Push notifications: working" : subscribed ? "Push notifications: on" : "Push notifications: off"}
+      aria-pressed={subscribed}
     >
       {subscribed ? <BellOff size={15} /> : <Bell size={15} />}
-      {busy ? "Working…" : subscribed ? "Push: On" : "Push: Off"}
     </button>
   );
 }

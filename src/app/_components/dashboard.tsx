@@ -9,6 +9,7 @@ import {
   Bell,
   BellRing,
   Briefcase,
+  Check,
   ChevronDown,
   Coffee,
   Download,
@@ -717,7 +718,13 @@ function HoldingsTable({
           role="group"
           aria-label="Filter by source"
         >
-          {(["all", "manual", "broker"] as const).map((sf) => (
+          {(
+            [
+              { key: "all", label: "All sources", Icon: Layers },
+              { key: "manual", label: "Manual holdings", Icon: Pencil },
+              { key: "broker", label: "Broker holdings", Icon: Landmark },
+            ] as const
+          ).map(({ key: sf, label, Icon }) => (
             <button
               key={sf}
               type="button"
@@ -726,11 +733,13 @@ function HoldingsTable({
                 pager.reset();
               }}
               aria-pressed={sourceFilter === sf}
-              className={"px-2.5 py-2 text-center text-xs font-semibold uppercase " + (sourceFilter === sf
+              aria-label={label}
+              title={label}
+              className={"flex items-center justify-center px-2.5 py-2 text-center text-xs font-semibold uppercase " + (sourceFilter === sf
                   ? "bg-zinc-600 text-white"
                   : "text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-800")}
             >
-              {sf}
+              <Icon size={15} />
             </button>
           ))}
         </div>
@@ -766,10 +775,11 @@ function HoldingsTable({
                 setClearAck(false);
                 setClearOpen(true);
               }}
+              aria-label="Clear manual holdings"
+              title="Clear manual holdings"
               className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-red-500/40 px-2 py-1.5 font-semibold text-red-400 hover:bg-red-500/10"
             >
               <Trash2 size={13} />
-              Clear
             </button>
           )}
         </div>
@@ -1074,9 +1084,11 @@ function HoldingsTable({
             <button
               type="button"
               onClick={() => setClearOpen(false)}
-              className="flex-1 rounded-lg border border-zinc-700 py-2 text-sm font-semibold text-zinc-300 hover:bg-zinc-800"
+              aria-label="Cancel"
+              title="Cancel"
+              className="flex flex-1 items-center justify-center rounded-lg border border-zinc-700 py-2 text-sm font-semibold text-zinc-300 hover:bg-zinc-800"
             >
-              Cancel
+              <X size={15} />
             </button>
             <button
               type="button"
@@ -1084,10 +1096,11 @@ function HoldingsTable({
               onClick={() =>
                 clearManual.mutate({ includeIbkr: clearScope === "all" })
               }
+              aria-label="Delete"
+              title="Delete"
               className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-red-600 py-2 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-40"
             >
-              <Trash2 size={14} />
-              {clearManual.isPending ? "Clearing…" : "Delete"}
+              {clearManual.isPending ? <Spinner size={14} /> : <Trash2 size={14} />}
             </button>
           </div>
         </div>
@@ -1256,16 +1269,20 @@ function EditTransactionModal({
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 rounded-lg border border-zinc-700 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
+              aria-label="Cancel"
+              title="Cancel"
+              className="flex flex-1 items-center justify-center rounded-lg border border-zinc-700 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
             >
-              Cancel
+              <X size={15} />
             </button>
             <button
               type="submit"
               disabled={update.isPending}
-              className="flex-1 rounded-lg bg-emerald-600 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+              aria-label="Save"
+              title="Save"
+              className="flex flex-1 items-center justify-center rounded-lg bg-emerald-600 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
             >
-              {update.isPending ? "Saving…" : "Save"}
+              {update.isPending ? <Spinner size={14} /> : <Check size={15} />}
             </button>
           </div>
         </form>
@@ -1441,13 +1458,15 @@ function TransactionForm() {
           <button
             type="submit"
             disabled={record.isPending}
-            className={`w-full rounded-lg py-2.5 text-sm font-semibold text-white transition disabled:opacity-50 ${
+            aria-label={`Record ${type.toLowerCase()}`}
+            title={`Record ${type.toLowerCase()}`}
+            className={`flex w-full items-center justify-center rounded-lg py-2.5 text-sm font-semibold text-white transition disabled:opacity-50 ${
               type === "BUY"
                 ? "bg-emerald-600 hover:bg-emerald-500"
                 : "bg-rose-600 hover:bg-rose-500"
             }`}
           >
-            {record.isPending ? "Recording…" : `Record ${type.toLowerCase()}`}
+            {record.isPending ? <Spinner size={15} /> : <Plus size={16} />}
           </button>
         </div>
       </form>
@@ -1801,9 +1820,11 @@ function HeaderMenu() {
                 onClick={() =>
                   track("tip_jar_opened", { location: "settings_menu" })
                 }
+                aria-label="Tip jar"
+                title="Tip jar"
                 className="inline-flex items-center gap-2 text-sm text-zinc-800 dark:text-zinc-200 hover:underline"
               >
-                <Coffee size={15} className="shrink-0" />☕ Tip jar
+                <Coffee size={15} className="shrink-0" />
               </a>
             </div>
             <div>
@@ -1811,11 +1832,12 @@ function HeaderMenu() {
                 <button
                   type="button"
                   onClick={() => signOut({ callbackUrl: "/" })}
+                  aria-label="Sign out"
+                  title="Sign out"
                   className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left hover:bg-zinc-700"
                 >
                   <LogOut size={15} className="shrink-0 text-zinc-700 dark:text-zinc-300" />
                   <span className="min-w-0">
-                    <span className="block text-sm text-zinc-800 dark:text-zinc-200">Sign out</span>
                     {session.user?.email && (
                       <span className="block truncate text-xs text-zinc-500">
                         {session.user.email}
@@ -1824,9 +1846,8 @@ function HeaderMenu() {
                   </span>
                 </button>
               ) : (
-                <a href="/login" className={itemCls}>
+                <a href="/login" className={itemCls} aria-label="Sign in" title="Sign in">
                   <LogIn size={15} />
-                  Sign in
                 </a>
               )}
             </div>
@@ -2581,9 +2602,11 @@ function DashboardInner() {
           <button
             type="button"
             onClick={() => layout.setEditMode(false)}
-            className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-500"
+            aria-label="Done customizing"
+            title="Done customizing"
+            className="flex items-center justify-center rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-500"
           >
-            Done
+            <Check size={15} />
           </button>
         </div>
       )}
