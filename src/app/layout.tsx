@@ -23,13 +23,20 @@ export const metadata: Metadata = {
     siteName: "Holdr",
     title: TITLE,
     description: DESCRIPTION,
-    images: [{ url: "/logo.webp", width: 512, height: 512, alt: "Holdr logo" }],
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Holdr — diamond hands portfolio tracker",
+      },
+    ],
   },
   twitter: {
-    card: "summary",
+    card: "summary_large_image",
     title: TITLE,
     description: DESCRIPTION,
-    images: ["/logo.webp"],
+    images: ["/og.png"],
   },
   icons: [
     { rel: "icon", url: "/favicon.png", type: "image/png" },
